@@ -54,7 +54,6 @@ students = load_data("students", STUDENT_COLS)
 lessons = load_data("lessons", LESSON_COLS)
 requests_df = load_data("requests", REQ_COLS)
 
-# 型別修正
 if not students.empty:
     students["id"] = pd.to_numeric(students["id"], errors="coerce").fillna(0).astype(int)
     students["hourly_rate"] = pd.to_numeric(students["hourly_rate"], errors="coerce").fillna(0).astype(int)
@@ -69,6 +68,7 @@ menu = st.sidebar.radio("功能選單", [
     "🏠 首頁總覽",
     "👤 學生管理",
     "📅 課程排程",
+    "📆 週期排課",
     "🔄 補課管理",
     "📋 申請審核",
     "📊 時數統計",
@@ -171,6 +171,93 @@ elif menu == "📅 課程排程":
             view["學生"] = view["student_id"].map(name_map)
             st.dataframe(view[["id", "date", "start", "end", "學生", "type", "status", "note"]], use_container_width=True)
 
+# ---------- 週期排課 ----------
+elif menu == "📆 週期排課":
+    st.title("📆 週期排課")
+    st.caption("一次產生多堂固定課程，省去一筆一筆新增的麻煩")
+
+    if students.empty:
+        st.warning("請先新增學生")
+    else:
+        col1, col2 = st.columns(2)
+
+        with col1:
+            student = st.selectbox("選擇學生", students["name"])
+            sid = int(students[students["name"] == student]["id"].values[0])
+
+            st.markdown("**上課星期（可多選）**")
+            weekdays_cn = ["一", "二", "三", "四", "五", "六", "日"]
+            selected_weekdays = []
+            cols = st.columns(7)
+            for i, wd in enumerate(weekdays_cn):
+                with cols[i]:
+                    if st.checkbox(wd, key=f"wd_{i}"):
+                        selected_weekdays.append(i)  # 0=一, 6=日
+
+        with col2:
+            st.markdown("**上課時間**")
+            c1, c2 = st.columns(2)
+            start = c1.time_input("開始", value=datetime.strptime("19:00", "%H:%M").time(), key="period_start")
+            end = c2.time_input("結束", value=datetime.strptime("20:00", "%H:%M").time(), key="period_end")
+
+            st.markdown("**產生範圍**")
+            quick = st.radio("快速選", ["1 個月", "2 個月", "自訂"], horizontal=True)
+            today = date.today()
+            if quick == "1 個月":
+                default_end = today + timedelta(days=30)
+                start_date = st.date_input("從", value=today)
+                end_date = st.date_input("到", value=default_end)
+            elif quick == "2 個月":
+                default_end = today + timedelta(days=60)
+                start_date = st.date_input("從", value=today)
+                end_date = st.date_input("到", value=default_end)
+            else:
+                start_date = st.date_input("從", value=today)
+                end_date = st.date_input("到", value=today + timedelta(days=30))
+
+        st.markdown("---")
+
+        # 預覽
+        if not selected_weekdays:
+            st.info("請至少勾選一個上課星期")
+        else:
+            preview_dates = []
+            cur = start_date
+            while cur <= end_date:
+                if cur.weekday() in selected_weekdays:
+                    preview_dates.append(cur)
+                cur += timedelta(days=1)
+
+            st.subheader(f"📋 預覽：將產生 {len(preview_dates)} 堂課")
+            if len(preview_dates) == 0:
+                st.warning("此範圍內沒有符合的日期")
+            else:
+                preview_df = pd.DataFrame({
+                    "日期": [d.strftime("%Y-%m-%d") for d in preview_dates],
+                    "星期": [['一', '二', '三', '四', '五', '六', '日'][d.weekday()] for d in preview_dates],
+                    "開始": [start.strftime("%H:%M")] * len(preview_dates),
+                    "結束": [end.strftime("%H:%M")] * len(preview_dates),
+                })
+                st.dataframe(preview_df, use_container_width=True, height=300)
+
+                if st.button("✅ 批次建立", type="primary"):
+                    new_lessons = lessons.copy() if not lessons.empty else pd.DataFrame(columns=LESSON_COLS)
+                    next_id = int(new_lessons["id"].max() + 1) if not new_lessons.empty else 1
+
+                    rows = []
+                    for d in preview_dates:
+                        rows.append([
+                            next_id, sid, str(d), start.strftime("%H:%M"), end.strftime("%H:%M"),
+                            "正課", "已排定", ""
+                        ])
+                        next_id += 1
+
+                    new_rows_df = pd.DataFrame(rows, columns=LESSON_COLS)
+                    new_lessons = pd.concat([new_lessons, new_rows_df], ignore_index=True)
+                    save_data(new_lessons, "lessons")
+                    st.success(f"✅ 已建立 {len(rows)} 堂課！")
+                    st.balloons()
+
 # ---------- 補課管理 ----------
 elif menu == "🔄 補課管理":
     st.title("🔄 補課管理")
@@ -225,13 +312,11 @@ elif menu == "📋 申請審核":
     if requests_df.empty:
         st.info("目前沒有申請")
     else:
-        # 待處理
         pending = requests_df[requests_df["status"] == "待處理"]
 
         if pending.empty:
             st.success("🎉 沒有待處理的申請")
 
-        # 歷史紀錄
         st.subheader(f"⏳ 待處理申請（{len(pending)} 筆）")
 
         name_map = students.set_index("id")["name"].to_dict() if not students.empty else {}
@@ -250,7 +335,6 @@ elif menu == "📋 申請審核":
                     st.markdown(f"**原因：** {row.get('reason', '（無）')}")
                     st.markdown(f"**送出時間：** {row.get('created_at', '')}")
 
-                    # 如果是請假，顯示原課程資訊
                     if row["type"] == "請假":
                         orig_id = row.get("original_lesson_id")
                         if str(orig_id).isdigit() and int(orig_id) in lesson_map:
@@ -268,7 +352,6 @@ elif menu == "📋 申請審核":
                         requests_df.loc[requests_df["id"] == req_id, "status"] = "已同意"
                         requests_df.loc[requests_df["id"] == req_id, "teacher_note"] = teacher_note
 
-                        # 如果是請假，原課程標記為待補課
                         if row["type"] == "請假":
                             orig_id = row.get("original_lesson_id")
                             if str(orig_id).isdigit():
@@ -289,7 +372,6 @@ elif menu == "📋 申請審核":
 
                 st.markdown("---")
 
-        # 歷史紀錄
         with st.expander("📜 查看歷史紀錄"):
             history = requests_df[requests_df["status"] != "待處理"].copy()
             if history.empty:
