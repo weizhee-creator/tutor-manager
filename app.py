@@ -429,7 +429,6 @@ elif menu == "🔀 調課管理":
     if lessons.empty or students.empty:
         st.info("尚無課程可調")
     else:
-        # 篩選可調的課程
         name_map = students.set_index("id")["name"].to_dict()
         lessons_avail = lessons[lessons["status"].astype(str) == "已排定"].copy()
         lessons_avail["學生"] = lessons_avail["student_id"].map(name_map)
@@ -464,13 +463,10 @@ elif menu == "🔀 調課管理":
                 reason = st.text_input("調課原因（可選）")
 
                 if st.form_submit_button("🔀 確認調課", type="primary"):
-                    # 1. 將原課程標記為「已調課」
+                    old_note = str(lessons.loc[lessons["id"] == old_lesson_id, "note"].values[0]) if "note" in lessons.columns else ""
                     lessons.loc[lessons["id"] == old_lesson_id, "status"] = "已調課"
-                    lessons.loc[lessons["id"] == old_lesson_id, "note"] = (
-                        str(lessons.loc[lessons["id"] == old_lesson_id, "note"].values[0]) + f" | 調至 {new_date} {new_start}"
-                    ).strip(" |")
+                    lessons.loc[lessons["id"] == old_lesson_id, "note"] = (old_note + f" | 調至 {new_date} {new_start}").strip(" |")
 
-                    # 2. 建立新課程
                     new_id = safe_next_id(lessons)
                     note_text = f"原課程 ID {old_lesson_id}"
                     if reason:
@@ -490,7 +486,7 @@ elif menu == "🔀 調課管理":
                     lessons = pd.concat([lessons, new_row], ignore_index=True)
                     save_data(lessons, "lessons")
 
-                    st.success(f"✅ 調課成功！\n- 原課程 ID {old_lesson_id} → 已調課\n- 新課程 ID {new_id} → {new_date} {new_start}-{new_end}")
+                    st.success(f"✅ 調課成功！原課程 ID {old_lesson_id} → 已調課；新課程 ID {new_id}")
                     st.rerun()
 
 # ---------- 月曆檢視 ----------
@@ -544,6 +540,13 @@ elif menu == "🗓️ 月曆檢視":
             if d not in lessons_by_date:
                 lessons_by_date[d] = []
             lessons_by_date[d].append(row)
+
+        # ✅ 每天課程按開始時間排序
+        for d in lessons_by_date:
+            lessons_by_date[d] = sorted(
+                lessons_by_date[d],
+                key=lambda x: str(x.get("start", ""))
+            )
 
         year = st.session_state.cal_year
         month = st.session_state.cal_month
