@@ -2,27 +2,63 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date, timedelta
-import os
+import gspread
+from google.oauth2.service_account import Credentials
+
+# ---------- 連接 Google Sheets ----------
+@st.cache_resource
+def get_gsheet_client():
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    creds_dict = dict(st.secrets["gcp_service_account"])
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    return gspread.authorize(creds)
+
+def get_sheet(name):
+    client = get_gsheet_client()
+    sheet_id = st.secrets["gcp"]["sheet_id"]
+    return client.open_by_key(sheet_id).worksheet(name)
+
+@st.cache_data(ttl=5)
+def load_data(sheet_name, columns):
+    try:
+        ws = get_sheet(sheet_name)
+        data = ws.get_all_records()
+        if not data:
+            return pd.DataFrame(columns=columns)
+        return pd.DataFrame(data)
+    except Exception as e:
+        st.error(f"讀取 {sheet_name} 失敗：{e}")
+        return pd.DataFrame(columns=columns)
+
+def save_data(df, sheet_name):
+    try:
+        ws = get_sheet(sheet_name)
+        ws.clear()
+        ws.update([df.columns.tolist()] + df.values.tolist())
+        st.cache_data.clear()
+    except Exception as e:
+        st.error(f"寫入 {sheet_name} 失敗：{e}")
 
 # ---------- 設定 ----------
-DATA_DIR = "data"
-STUDENT_FILE = os.path.join(DATA_DIR, "students.csv")
-LESSON_FILE = os.path.join(DATA_DIR, "lessons.csv")
-os.makedirs(DATA_DIR, exist_ok=True)
-
 st.set_page_config(page_title="家教時間管理", page_icon="📚", layout="wide")
 
-# ---------- 資料讀取 ----------
-def load_csv(path, columns):
-    if os.path.exists(path):
-        return pd.read_csv(path)
-    return pd.DataFrame(columns=columns)
+STUDENT_COLS = ["id", "name", "subject", "hourly_rate", "note"]
+LESSON_COLS = ["id", "student_id", "date", "start", "end", "type", "status", "note"]
 
-def save_csv(df, path):
-    df.to_csv(path, index=False)
+students = load_data("students", STUDENT_COLS)
+lessons = load_data("lessons", LESSON_COLS)
 
-students = load_csv(STUDENT_FILE, ["id", "name", "subject", "hourly_rate", "note"])
-lessons = load_csv(LESSON_FILE, ["id", "student_id", "date", "start", "end", "type", "status", "note"])
+# 型別修正
+if not students.empty:
+    students["id"] = pd.to_numeric(students["id"], errors="coerce").fillna(0).astype(int)
+    students["hourly_rate"] = pd.to_numeric(students["hourly_rate"], errors="coerce").fillna(0).astype(int)
+
+if not lessons.empty:
+    lessons["id"] = pd.to_numeric(lessons["id"], errors="coerce").fillna(0).astype(int)
+    lessons["student_id"] = pd.to_numeric(lessons["student_id"], errors="coerce").fillna(0).astype(int)
 
 # ---------- 側邊欄 ----------
 st.sidebar.title("📚 家教管理系統")
@@ -34,7 +70,7 @@ if menu == "🏠 首頁總覽":
     today = date.today()
     upcoming = lessons.copy()
     if not upcoming.empty:
-        upcoming["date"] = pd.to_datetime(upcoming["date"]).dt.date
+        upcoming["date"] = pd.to_datetime(upcoming["date"], errors="coerce").dt.date
         upcoming = upcoming[upcoming["date"] >= today].sort_values(["date", "start"])
 
     col1, col2, col3 = st.columns(3)
@@ -47,7 +83,8 @@ if menu == "🏠 首頁總覽":
         st.info("目前沒有安排課程")
     else:
         show = upcoming.head(10).copy()
-        show["學生"] = show["student_id"].map(students.set_index("id")["name"] if not students.empty else {})
+        name_map = students.set_index("id")["name"].to_dict() if not students.empty else {}
+        show["學生"] = show["student_id"].map(name_map)
         st.dataframe(show[["date", "start", "end", "學生", "type", "status"]], use_container_width=True)
 
 # ---------- 學生管理 ----------
@@ -61,11 +98,15 @@ elif menu == "👤 學生管理":
             rate = st.number_input("時薪", min_value=0, step=50)
             note = st.text_area("備註")
             if st.form_submit_button("新增"):
-                new_id = int(students["id"].max() + 1) if not students.empty else 1
-                students.loc[len(students)] = [new_id, name, subject, rate, note]
-                save_csv(students, STUDENT_FILE)
-                st.success(f"已新增學生 {name}")
-                st.rerun()
+                if name.strip() == "":
+                    st.warning("姓名不能為空")
+                else:
+                    new_id = int(students["id"].max() + 1) if not students.empty else 1
+                    new_row = pd.DataFrame([[new_id, name, subject, rate, note]], columns=STUDENT_COLS)
+                    students = pd.concat([students, new_row], ignore_index=True)
+                    save_data(students, "students")
+                    st.success(f"已新增學生 {name}")
+                    st.rerun()
 
     st.subheader("學生列表")
     if students.empty:
@@ -75,7 +116,7 @@ elif menu == "👤 學生管理":
         del_id = st.selectbox("刪除學生 ID", students["id"])
         if st.button("🗑️ 刪除"):
             students = students[students["id"] != del_id]
-            save_csv(students, STUDENT_FILE)
+            save_data(students, "students")
             st.rerun()
 
 # ---------- 課程排程 ----------
@@ -96,8 +137,12 @@ elif menu == "📅 課程排程":
             note = st.text_input("備註")
             if st.form_submit_button("新增課程"):
                 new_id = int(lessons["id"].max() + 1) if not lessons.empty else 1
-                lessons.loc[len(lessons)] = [new_id, sid, d, start.strftime("%H:%M"), end.strftime("%H:%M"), ltype, "已排定", note]
-                save_csv(lessons, LESSON_FILE)
+                new_row = pd.DataFrame(
+                    [[new_id, sid, str(d), start.strftime("%H:%M"), end.strftime("%H:%M"), ltype, "已排定", note]],
+                    columns=LESSON_COLS
+                )
+                lessons = pd.concat([lessons, new_row], ignore_index=True)
+                save_data(lessons, "lessons")
                 st.success("課程已新增")
                 st.rerun()
 
@@ -106,7 +151,8 @@ elif menu == "📅 課程排程":
             st.info("尚無課程")
         else:
             view = lessons.copy()
-            view["學生"] = view["student_id"].map(students.set_index("id")["name"])
+            name_map = students.set_index("id")["name"].to_dict()
+            view["學生"] = view["student_id"].map(name_map)
             st.dataframe(view[["id", "date", "start", "end", "學生", "type", "status", "note"]], use_container_width=True)
 
 # ---------- 補課管理 ----------
@@ -122,7 +168,7 @@ elif menu == "🔄 補課管理":
             lid = st.selectbox("選擇要請假的課程", pending["id"])
             if st.button("標記為待補課"):
                 lessons.loc[lessons["id"] == lid, "status"] = "待補課"
-                save_csv(lessons, LESSON_FILE)
+                save_data(lessons, "lessons")
                 st.success("已標記，請安排補課時間")
                 st.rerun()
 
@@ -132,7 +178,8 @@ elif menu == "🔄 補課管理":
         st.success("沒有待補課項目 🎉")
     else:
         todo_view = todo.copy()
-        todo_view["學生"] = todo_view["student_id"].map(students.set_index("id")["name"])
+        name_map = students.set_index("id")["name"].to_dict()
+        todo_view["學生"] = todo_view["student_id"].map(name_map)
         st.dataframe(todo_view[["id", "date", "start", "end", "學生", "note"]], use_container_width=True)
 
         st.markdown("### 安排補課")
@@ -145,9 +192,13 @@ elif menu == "🔄 補課管理":
             if st.form_submit_button("建立補課"):
                 sid = int(lessons[lessons["id"] == lid]["student_id"].values[0])
                 new_id = int(lessons["id"].max() + 1)
-                lessons.loc[len(lessons)] = [new_id, sid, new_date, ns.strftime("%H:%M"), ne.strftime("%H:%M"), "補課", "已排定", f"補原課程 {lid}"]
+                new_row = pd.DataFrame(
+                    [[new_id, sid, str(new_date), ns.strftime("%H:%M"), ne.strftime("%H:%M"), "補課", "已排定", f"補原課程 {lid}"]],
+                    columns=LESSON_COLS
+                )
+                lessons = pd.concat([lessons, new_row], ignore_index=True)
                 lessons.loc[lessons["id"] == lid, "status"] = "已補課"
-                save_csv(lessons, LESSON_FILE)
+                save_data(lessons, "lessons")
                 st.success("補課已建立")
                 st.rerun()
 
@@ -159,13 +210,15 @@ elif menu == "📊 時數統計":
         st.info("資料不足")
     else:
         df = lessons.copy()
-        df["date"] = pd.to_datetime(df["date"])
-        df["start_dt"] = pd.to_datetime(df["date"].dt.strftime("%Y-%m-%d") + " " + df["start"])
-        df["end_dt"] = pd.to_datetime(df["date"].dt.strftime("%Y-%m-%d") + " " + df["end"])
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df = df.dropna(subset=["date"])
+        df["start_dt"] = pd.to_datetime(df["date"].dt.strftime("%Y-%m-%d") + " " + df["start"], errors="coerce")
+        df["end_dt"] = pd.to_datetime(df["date"].dt.strftime("%Y-%m-%d") + " " + df["end"], errors="coerce")
         df["hours"] = (df["end_dt"] - df["start_dt"]).dt.total_seconds() / 3600
-        df["學生"] = df["student_id"].map(students.set_index("id")["name"])
+        name_map = students.set_index("id")["name"].to_dict()
+        df["學生"] = df["student_id"].map(name_map)
 
-        months = sorted(df["date"].dt.strftime("%Y-%m").unique(), reverse=True)
+        months = sorted(df["date"].dt.strftime("%Y-%m").dropna().unique(), reverse=True)
         month = st.selectbox("選擇月份", ["全部"] + list(months))
         if month != "全部":
             df = df[df["date"].dt.strftime("%Y-%m") == month]
