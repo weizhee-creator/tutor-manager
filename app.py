@@ -42,6 +42,14 @@ def save_data(df, sheet_name):
     except Exception as e:
         st.error(f"寫入 {sheet_name} 失敗：{e}")
 
+def parse_date_safe(series):
+    result = pd.to_datetime(series, errors="coerce", format="%Y-%m-%d")
+    mask = result.isna()
+    if mask.any():
+        result2 = pd.to_datetime(series[mask], errors="coerce", format="%Y/%m/%d")
+        result.loc[mask] = result2
+    return result
+
 # ---------- 設定 ----------
 st.set_page_config(page_title="家教時間管理", page_icon="📚", layout="wide")
 
@@ -49,10 +57,12 @@ STUDENT_COLS = ["id", "name", "subject", "hourly_rate", "note"]
 LESSON_COLS = ["id", "student_id", "date", "start", "end", "type", "status", "note"]
 REQ_COLS = ["id", "student_id", "type", "original_lesson_id", "requested_date",
             "requested_start", "requested_end", "reason", "status", "created_at", "teacher_note"]
+PROG_COLS = ["id", "student_id", "lesson_id", "date", "content", "homework", "note", "created_at"]
 
 students = load_data("students", STUDENT_COLS)
 lessons = load_data("lessons", LESSON_COLS)
 requests_df = load_data("requests", REQ_COLS)
+progress_df = load_data("progress", PROG_COLS)
 
 if not students.empty:
     students["id"] = pd.to_numeric(students["id"], errors="coerce").fillna(0).astype(int)
@@ -71,7 +81,8 @@ menu = st.sidebar.radio("功能選單", [
     "📆 週期排課",
     "🔄 補課管理",
     "📋 申請審核",
-    "📊 時數統計",
+    "📊 上課進度",
+    "📈 時數統計",
 ])
 
 # ---------- 首頁 ----------
@@ -80,8 +91,11 @@ if menu == "🏠 首頁總覽":
     today = date.today()
     upcoming = lessons.copy()
     if not upcoming.empty:
-        upcoming["date"] = pd.to_datetime(upcoming["date"], errors="coerce").dt.date
-        upcoming = upcoming[upcoming["date"] >= today].sort_values(["date", "start"])
+        upcoming["date"] = parse_date_safe(upcoming["date"]).dt.date
+        upcoming = upcoming[
+            (upcoming["date"] >= today) &
+            (upcoming["status"].astype(str) != "已補課")
+        ].sort_values(["date", "start"])
 
     pending_requests = len(requests_df[requests_df["status"] == "待處理"]) if not requests_df.empty else 0
 
@@ -98,7 +112,7 @@ if menu == "🏠 首頁總覽":
     if upcoming.empty:
         st.info("目前沒有安排課程")
     else:
-        show = upcoming.head(10).copy()
+        show = upcoming.head(20).copy()
         name_map = students.set_index("id")["name"].to_dict() if not students.empty else {}
         show["學生"] = show["student_id"].map(name_map)
         st.dataframe(show[["date", "start", "end", "學生", "type", "status"]], use_container_width=True)
@@ -192,7 +206,7 @@ elif menu == "📆 週期排課":
             for i, wd in enumerate(weekdays_cn):
                 with cols[i]:
                     if st.checkbox(wd, key=f"wd_{i}"):
-                        selected_weekdays.append(i)  # 0=一, 6=日
+                        selected_weekdays.append(i)
 
         with col2:
             st.markdown("**上課時間**")
@@ -217,7 +231,6 @@ elif menu == "📆 週期排課":
 
         st.markdown("---")
 
-        # 預覽
         if not selected_weekdays:
             st.info("請至少勾選一個上課星期")
         else:
@@ -340,8 +353,6 @@ elif menu == "📋 申請審核":
                         if str(orig_id).isdigit() and int(orig_id) in lesson_map:
                             orig = lesson_map[int(orig_id)]
                             st.info(f"📅 原課程：{orig.get('date')} {orig.get('start')}-{orig.get('end')}（{orig.get('type')}）")
-                        else:
-                            st.caption(f"原課程 ID：{orig_id}")
 
                 with col2:
                     teacher_note = st.text_input("老師備註", key=f"note_{req_id}")
@@ -385,15 +396,120 @@ elif menu == "📋 申請審核":
                     use_container_width=True
                 )
 
+# ---------- 上課進度 ----------
+elif menu == "📊 上課進度":
+    st.title("📊 上課進度紀錄")
+    st.caption("每堂課後記錄上課內容與作業")
+
+    if students.empty:
+        st.warning("請先新增學生")
+    else:
+        col1, col2 = st.columns(2)
+        with col1:
+            student = st.selectbox("選擇學生", students["name"])
+            sid = int(students[students["name"] == student]["id"].values[0])
+
+        # 該學生的課程
+        my_lessons = lessons[lessons["student_id"] == sid].copy() if not lessons.empty else pd.DataFrame()
+
+        if my_lessons.empty:
+            st.info("該學生尚無課程")
+        else:
+            my_lessons["date_parsed"] = parse_date_safe(my_lessons["date"])
+            my_lessons = my_lessons.sort_values("date_parsed", ascending=False)
+
+            # 今天以前的課程（可以記錄進度）
+            today = pd.Timestamp(date.today())
+            recordable = my_lessons[my_lessons["date_parsed"] <= today]
+
+            if recordable.empty:
+                st.info("尚無已發生的課程可記錄")
+            else:
+                options = {}
+                for _, row in recordable.iterrows():
+                    d_str = row["date_parsed"].strftime("%Y-%m-%d") if pd.notna(row["date_parsed"]) else str(row["date"])
+                    label = f"{d_str} {row['start']}-{row['end']}（{row.get('type', '')}）"
+                    options[label] = int(row["id"])
+
+                selected_label = st.selectbox("選擇課程", list(options.keys()))
+                lesson_id = options[selected_label]
+
+                # 檢查是否已有紀錄
+                existing = progress_df[progress_df["lesson_id"].astype(str) == str(lesson_id)] if not progress_df.empty else pd.DataFrame()
+
+                if not existing.empty:
+                    ex = existing.iloc[0]
+                    default_content = str(ex.get("content", ""))
+                    default_homework = str(ex.get("homework", ""))
+                    default_note = str(ex.get("note", ""))
+                    st.info("📝 這堂課已有紀錄，修改後會覆蓋")
+                else:
+                    default_content = ""
+                    default_homework = ""
+                    default_note = ""
+
+                with st.form("progress_form"):
+                    content = st.text_area("上課內容 / 進度", value=default_content, height=150)
+                    homework = st.text_area("作業", value=default_homework, height=100)
+                    note = st.text_area("備註", value=default_note, height=80)
+
+                    if st.form_submit_button("💾 儲存進度", use_container_width=True):
+                        if not content.strip():
+                            st.error("請填寫上課內容")
+                        else:
+                            lesson_row = recordable[recordable["id"] == lesson_id].iloc[0]
+                            d_str = lesson_row["date_parsed"].strftime("%Y-%m-%d") if pd.notna(lesson_row["date_parsed"]) else str(lesson_row["date"])
+
+                            if not existing.empty:
+                                # 更新
+                                progress_df.loc[progress_df["lesson_id"].astype(str) == str(lesson_id), "content"] = content
+                                progress_df.loc[progress_df["lesson_id"].astype(str) == str(lesson_id), "homework"] = homework
+                                progress_df.loc[progress_df["lesson_id"].astype(str) == str(lesson_id), "note"] = note
+                            else:
+                                # 新增
+                                new_id = int(progress_df["id"].max() + 1) if not progress_df.empty and "id" in progress_df.columns else 1
+                                new_row = pd.DataFrame([[
+                                    new_id, sid, lesson_id, d_str, content, homework, note,
+                                    datetime.now().strftime("%Y-%m-%d %H:%M")
+                                ]], columns=PROG_COLS)
+                                progress_df = pd.concat([progress_df, new_row], ignore_index=True)
+
+                            save_data(progress_df, "progress")
+                            st.success("✅ 進度已儲存")
+                            st.rerun()
+
+        st.markdown("---")
+        st.subheader("📚 已記錄的進度")
+        my_progress = progress_df[progress_df["student_id"].astype(str) == str(sid)] if not progress_df.empty else pd.DataFrame()
+
+        if my_progress.empty:
+            st.info("尚無進度紀錄")
+        else:
+            my_progress = my_progress.copy()
+            my_progress["date_parsed"] = parse_date_safe(my_progress["date"])
+            my_progress = my_progress.sort_values("date_parsed", ascending=False)
+
+            for _, row in my_progress.iterrows():
+                with st.container():
+                    st.markdown(f"### 📅 {row.get('date', '')}")
+                    st.markdown(f"**📖 上課內容：**")
+                    st.markdown(f"{row.get('content', '')}")
+                    if row.get("homework"):
+                        st.markdown(f"**📝 作業：** {row['homework']}")
+                    if row.get("note"):
+                        st.caption(f"💬 {row['note']}")
+                    st.caption(f"記錄時間：{row.get('created_at', '')}")
+                    st.markdown("---")
+
 # ---------- 時數統計 ----------
-elif menu == "📊 時數統計":
-    st.title("📊 時數統計")
+elif menu == "📈 時數統計":
+    st.title("📈 時數統計")
 
     if lessons.empty or students.empty:
         st.info("資料不足")
     else:
         df = lessons.copy()
-        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df["date"] = parse_date_safe(df["date"])
         df = df.dropna(subset=["date"])
         df["start_dt"] = pd.to_datetime(df["date"].dt.strftime("%Y-%m-%d") + " " + df["start"], errors="coerce")
         df["end_dt"] = pd.to_datetime(df["date"].dt.strftime("%Y-%m-%d") + " " + df["end"], errors="coerce")
@@ -417,3 +533,4 @@ elif menu == "📊 時數統計":
         import plotly.express as px
         fig = px.bar(summary, x="學生", y="總時數", title="各學生上課時數")
         st.plotly_chart(fig, use_container_width=True)
+        
