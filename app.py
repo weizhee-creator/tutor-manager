@@ -718,4 +718,15 @@ elif menu == "📈 時數統計":
         months = sorted(df["date"].dt.strftime("%Y-%m").dropna().unique(), reverse=True)
         month = st.selectbox("選擇月份", ["全部"] + list(months))
         if month != "全部":
-            df = df[df["
+            df = df[df["date"].dt.strftime("%Y-%m") == month]
+
+        summary = df.groupby("學生")["hours"].sum().reset_index()
+        summary.columns = ["學生", "總時數"]
+        rate_map = students.set_index("name")["hourly_rate"].to_dict()
+        summary["預估收入"] = summary.apply(lambda r: r["總時數"] * rate_map.get(r["學生"], 0), axis=1)
+        st.metric("總收入", f"NT$ {int(summary['預估收入'].sum()):,}")
+        st.dataframe(summary, use_container_width=True)
+
+        import plotly.express as px
+        fig = px.bar(summary, x="學生", y="總時數", title="各學生上課時數")
+        st.plotly_chart(fig, use_container_width=True)
