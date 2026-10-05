@@ -25,7 +25,7 @@ def get_sheet(name):
     sheet_id = st.secrets["gcp"]["sheet_id"]
     return client.open_by_key(sheet_id).worksheet(name)
 
-@st.cache_data(ttl=5)
+@st.cache_data(ttl=100)
 def load_data(sheet_name, columns=None):
     try:
         ws = get_sheet(sheet_name)
