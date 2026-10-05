@@ -1,10 +1,17 @@
 # -*- coding: utf-8 -*-
+import os
+import time
+os.environ["TZ"] = "Asia/Taipei"
+try:
+    time.tzset()
+except AttributeError:
+    pass
+
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date, timedelta
 import gspread
 from google.oauth2.service_account import Credentials
-from google.oauth2.credentials import Credentials as OAuthCredentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 import io
