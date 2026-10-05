@@ -8,6 +8,7 @@ except AttributeError:
     pass
 
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 from datetime import datetime, date, timedelta
 import gspread
@@ -16,6 +17,7 @@ from google.oauth2.credentials import Credentials as OAuthCredentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 import io
+import calendar
 
 # ---------- 連接 Google Sheets ----------
 @st.cache_resource
@@ -87,6 +89,33 @@ def safe_next_id(df, id_col="id"):
         return 1
     return int(ids.max() + 1)
 
+# ---------- 學生顏色對應 ----------
+STUDENT_COLORS = [
+    "#FF6B6B",  # 紅
+    "#FFA94D",  # 橙
+    "#FFD43B",  # 黃
+    "#51CF66",  # 綠
+    "#22B8CF",  # 青
+    "#4DABF7",  # 藍
+    "#9775FA",  # 紫
+    "#F783AC",  # 粉紅
+    "#A0784C",  # 棕
+    "#2F9E44",  # 深綠
+    "#1971C2",  # 深藍
+    "#6741D9",  # 深紫
+    "#5C7CFA",  # 灰藍
+    "#E599F7",  # 淡紫
+    "#FFA8A8",  # 淡紅
+]
+
+def get_student_color(student_id, all_student_ids):
+    """根據學生 id 取得對應顏色"""
+    try:
+        idx = list(all_student_ids).index(student_id)
+        return STUDENT_COLORS[idx % len(STUDENT_COLORS)]
+    except (ValueError, TypeError):
+        return "#CCCCCC"
+
 # ---------- Google Drive 工具 ----------
 def find_or_create_folder(service, name, parent_id=None):
     query = f"name='{name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
@@ -154,6 +183,7 @@ menu = st.sidebar.radio("功能選單", [
     "👤 學生管理",
     "📅 課程排程",
     "📆 週期排課",
+    "🗓️ 月曆檢視",
     "🔄 補課管理",
     "📋 申請審核",
     "📊 上課進度",
@@ -232,7 +262,6 @@ elif menu == "📅 課程排程":
     if students.empty:
         st.warning("請先新增學生")
     else:
-        # ---------- 新增課程 ----------
         with st.expander("➕ 新增課程", expanded=False):
             with st.form("add_lesson"):
                 student = st.selectbox("學生", students["name"])
@@ -255,8 +284,6 @@ elif menu == "📅 課程排程":
                     st.rerun()
 
         st.markdown("---")
-
-        # ---------- 所有課程（含篩選） ----------
         st.subheader("📋 所有課程")
 
         col_f1, col_f2 = st.columns(2)
@@ -288,8 +315,6 @@ elif menu == "📅 課程排程":
             st.dataframe(view[["id", "date", "start", "end", "學生", "type", "status", "note"]], use_container_width=True)
 
         st.markdown("---")
-
-        # ---------- 刪除課程 ----------
         st.subheader("🗑️ 刪除課程")
         st.caption("刪除時會一併刪除相關的請假申請與進度紀錄")
 
@@ -305,7 +330,6 @@ elif menu == "📅 課程排程":
             del_id = del_options[selected_del]
 
             st.warning(f"⚠️ 將刪除課程 ID = {del_id}，及其相關的請假申請與進度紀錄")
-
             confirm = st.checkbox("我確認要刪除這堂課（無法復原）", key="confirm_del_lesson")
 
             if st.button("🗑️ 確定刪除", disabled=not confirm, type="primary"):
@@ -407,6 +431,238 @@ elif menu == "📆 週期排課":
                     st.success(f"✅ 已建立 {len(rows)} 堂課！")
                     st.balloons()
 
+# ---------- 月曆檢視 ----------
+elif menu == "🗓️ 月曆檢視":
+    st.title("🗓️ 月曆檢視")
+
+    if lessons.empty:
+        st.info("尚無課程")
+    else:
+        # 月份選擇
+        today = date.today()
+        if "cal_year" not in st.session_state:
+            st.session_state.cal_year = today.year
+        if "cal_month" not in st.session_state:
+            st.session_state.cal_month = today.month
+
+        col1, col2, col3 = st.columns([1, 3, 1])
+        with col1:
+            if st.button("◀ 上個月"):
+                if st.session_state.cal_month == 1:
+                    st.session_state.cal_month = 12
+                    st.session_state.cal_year -= 1
+                else:
+                    st.session_state.cal_month -= 1
+                st.rerun()
+        with col2:
+            st.markdown(f"<h2 style='text-align: center;'>{st.session_state.cal_year} 年 {st.session_state.cal_month} 月</h2>", unsafe_allow_html=True)
+        with col3:
+            if st.button("下個月 ▶"):
+                if st.session_state.cal_month == 12:
+                    st.session_state.cal_month = 1
+                    st.session_state.cal_year += 1
+                else:
+                    st.session_state.cal_month += 1
+                st.rerun()
+
+        # 整理該月課程
+        lessons_cal = lessons.copy()
+        lessons_cal["date_parsed"] = parse_date_safe(lessons_cal["date"])
+        lessons_cal = lessons_cal.dropna(subset=["date_parsed"])
+        lessons_cal = lessons_cal[
+            (lessons_cal["date_parsed"].dt.year == st.session_state.cal_year) &
+            (lessons_cal["date_parsed"].dt.month == st.session_state.cal_month)
+        ]
+
+        name_map = students.set_index("id")["name"].to_dict() if not students.empty else {}
+        student_ids = list(students["id"]) if not students.empty else []
+        lessons_cal["學生"] = lessons_cal["student_id"].map(name_map)
+
+        # 依日期分組
+        lessons_by_date = {}
+        for _, row in lessons_cal.iterrows():
+            d = row["date_parsed"].date()
+            if d not in lessons_by_date:
+                lessons_by_date[d] = []
+            lessons_by_date[d].append(row)
+
+        # 產生月曆 HTML
+        year = st.session_state.cal_year
+        month = st.session_state.cal_month
+
+        # 該月第一天是星期幾、有幾天
+        first_day = date(year, month, 1)
+        days_in_month = calendar.monthrange(year, month)[1]
+
+        # 星期一為第一天（0=Mon）
+        first_weekday = first_day.weekday()
+
+        # 建立 HTML
+        html = """
+        <style>
+        .cal-container {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+        }
+        .cal-table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+        }
+        .cal-table th {
+            background: #F0F2F6;
+            padding: 8px 4px;
+            text-align: center;
+            font-weight: 600;
+            font-size: 14px;
+            color: #333;
+            border: 1px solid #E0E0E0;
+        }
+        .cal-table td {
+            border: 1px solid #E0E0E0;
+            padding: 4px;
+            vertical-align: top;
+            height: 110px;
+            width: 14.28%;
+        }
+        .cal-day-num {
+            font-weight: bold;
+            font-size: 14px;
+            color: #333;
+            margin-bottom: 4px;
+        }
+        .cal-day-other {
+            color: #CCC;
+        }
+        .cal-today {
+            background: #FFF8E1;
+        }
+        .cal-lesson {
+            display: block;
+            font-size: 11px;
+            padding: 2px 4px;
+            margin-bottom: 2px;
+            border-radius: 3px;
+            color: white;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .cal-legend {
+            margin-top: 16px;
+            padding: 12px;
+            background: #F8F9FA;
+            border-radius: 8px;
+        }
+        .cal-legend-item {
+            display: inline-block;
+            margin-right: 16px;
+            margin-bottom: 6px;
+            font-size: 13px;
+        }
+        .cal-legend-dot {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 4px;
+            vertical-align: middle;
+        }
+        </style>
+        <div class="cal-container">
+        <table class="cal-table">
+        <thead>
+        <tr>
+            <th>一</th><th>二</th><th>三</th><th>四</th><th>五</th><th>六</th><th>日</th>
+        </tr>
+        </thead>
+        <tbody>
+        """
+
+        # 計算需要的週數
+        total_cells = first_weekday + days_in_month
+        total_weeks = (total_cells + 6) // 7
+
+        current_day = 1
+        today_date = date.today()
+
+        for week in range(total_weeks):
+            html += "<tr>"
+            for wd in range(7):
+                cell_index = week * 7 + wd
+                if cell_index < first_weekday or current_day > days_in_month:
+                    html += "<td></td>"
+                else:
+                    d = date(year, month, current_day)
+                    is_today = (d == today_date)
+                    td_class = ' class="cal-today"' if is_today else ""
+
+                    html += f'<td{td_class}>'
+                    html += f'<div class="cal-day-num">{current_day}</div>'
+
+                    # 該天課程
+                    if d in lessons_by_date:
+                        for lesson in lessons_by_date[d][:4]:
+                            color = get_student_color(lesson["student_id"], student_ids)
+                            name = lesson.get("學生", "")
+                            start_t = lesson.get("start", "")
+                            ltype = lesson.get("type", "")
+                            title = f"{start_t} {name}"
+                            html += f'<span class="cal-lesson" style="background:{color};" title="{title}">{title}</span>'
+
+                        if len(lessons_by_date[d]) > 4:
+                            html += f'<div style="font-size:10px;color:#666;">+{len(lessons_by_date[d]) - 4} 更多</div>'
+
+                    html += "</td>"
+                    current_day += 1
+            html += "</tr>"
+
+        html += """
+        </tbody>
+        </table>
+        """
+
+        # 圖例
+        html += '<div class="cal-legend"><strong>學生顏色對應：</strong><br>'
+        if not students.empty:
+            for i, (_, s) in enumerate(students.iterrows()):
+                color = STUDENT_COLORS[i % len(STUDENT_COLORS)]
+                html += f'<span class="cal-legend-item"><span class="cal-legend-dot" style="background:{color};"></span>{s["name"]}</span>'
+
+        html += "</div></div>"
+
+        components.html(html, height=800, scrolling=True)
+
+        # 點日期看課程（用 selectbox 代替）
+        st.markdown("---")
+        st.subheader("📋 查看某日課程")
+
+        if not lessons_cal.empty:
+            available_dates = sorted(lessons_by_date.keys())
+            date_options = [d.strftime("%Y-%m-%d（週" + ['一', '二', '三', '四', '五', '六', '日'][d.weekday()] + "）") for d in available_dates]
+            selected_date_str = st.selectbox("選擇日期", date_options)
+            selected_idx = date_options.index(selected_date_str)
+            selected_date = available_dates[selected_idx]
+
+            st.markdown(f"### 📅 {selected_date.strftime('%Y-%m-%d')}（週{['一', '二', '三', '四', '五', '六', '日'][selected_date.weekday()]}）")
+
+            day_lessons = lessons_by_date[selected_date]
+            for lesson in day_lessons:
+                color = get_student_color(lesson["student_id"], student_ids)
+                with st.container():
+                    c1, c2, c3, c4 = st.columns([1, 2, 2, 2])
+                    with c1:
+                        st.markdown(f'<div style="background:{color};width:20px;height:20px;border-radius:50%;"></div>', unsafe_allow_html=True)
+                    with c2:
+                        st.markdown(f"**{lesson.get('start')}-{lesson.get('end')}**")
+                    with c3:
+                        st.markdown(f"**{lesson.get('學生', '')}**　{lesson.get('type', '')}")
+                    with c4:
+                        st.markdown(f"{lesson.get('status', '')}")
+                    if lesson.get("note"):
+                        st.caption(f"📝 {lesson['note']}")
+        else:
+            st.info("這個月沒有課程")
+
 # ---------- 補課管理 ----------
 elif menu == "🔄 補課管理":
     st.title("🔄 補課管理")
@@ -439,7 +695,6 @@ elif menu == "🔄 補課管理":
             st.info("目前沒有已排定的課程")
 
     st.markdown("---")
-
     st.subheader("待補課清單")
     todo = lessons[lessons["status"] == "待補課"]
     if todo.empty:
@@ -451,7 +706,6 @@ elif menu == "🔄 補課管理":
         st.dataframe(todo_view[["id", "date", "start", "end", "學生", "type", "note"]], use_container_width=True)
 
         st.markdown("### 安排補課")
-
         todo = todo.copy()
         todo["date_parsed"] = parse_date_safe(todo["date"])
         todo_options = {}
@@ -463,7 +717,6 @@ elif menu == "🔄 補課管理":
         with st.form("makeup"):
             selected_todo = st.selectbox("選擇要補的課程", list(todo_options.keys()))
             lid = todo_options[selected_todo]
-
             new_date = st.date_input("補課日期")
             c1, c2 = st.columns(2)
             ns = c1.time_input("開始", value=datetime.strptime("19:00", "%H:%M").time())
