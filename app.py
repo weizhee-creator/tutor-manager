@@ -169,15 +169,15 @@ if not lessons.empty:
 st.sidebar.title("📚 家教管理系統")
 menu = st.sidebar.radio("功能選單", [
     "🏠 首頁總覽",
+    "🗓️ 月曆檢視",
+    "📊 上課進度",
     "👤 學生管理",
+    "🔄 補課管理",
+    "🔀 調課管理",
+    "📁 檔案管理",
+    "📋 申請審核",
     "📅 課程排程",
     "📆 週期排課",
-    "🔀 調課管理",
-    "🗓️ 月曆檢視",
-    "🔄 補課管理",
-    "📋 申請審核",
-    "📊 上課進度",
-    "📁 檔案管理",
     "📈 時數統計",
 ])
 
@@ -213,6 +213,261 @@ if menu == "🏠 首頁總覽":
         show["學生"] = show["student_id"].map(name_map)
         st.dataframe(show[["date", "start", "end", "學生", "type", "status"]], use_container_width=True)
 
+# ---------- 月曆檢視 ----------
+elif menu == "🗓️ 月曆檢視":
+    st.title("🗓️ 月曆檢視")
+
+    if lessons.empty:
+        st.info("尚無課程")
+    else:
+        today = date.today()
+        if "cal_year" not in st.session_state:
+            st.session_state.cal_year = today.year
+        if "cal_month" not in st.session_state:
+            st.session_state.cal_month = today.month
+
+        col1, col2, col3 = st.columns([1, 3, 1])
+        with col1:
+            if st.button("◀ 上個月"):
+                if st.session_state.cal_month == 1:
+                    st.session_state.cal_month = 12
+                    st.session_state.cal_year -= 1
+                else:
+                    st.session_state.cal_month -= 1
+                st.rerun()
+        with col2:
+            st.markdown(f"<h2 style='text-align: center;'>{st.session_state.cal_year} 年 {st.session_state.cal_month} 月</h2>", unsafe_allow_html=True)
+        with col3:
+            if st.button("下個月 ▶"):
+                if st.session_state.cal_month == 12:
+                    st.session_state.cal_month = 1
+                    st.session_state.cal_year += 1
+                else:
+                    st.session_state.cal_month += 1
+                st.rerun()
+
+        lessons_cal = lessons.copy()
+        lessons_cal["date_parsed"] = parse_date_safe(lessons_cal["date"])
+        lessons_cal = lessons_cal.dropna(subset=["date_parsed"])
+        lessons_cal = lessons_cal[
+            (lessons_cal["date_parsed"].dt.year == st.session_state.cal_year) &
+            (lessons_cal["date_parsed"].dt.month == st.session_state.cal_month)
+        ]
+
+        name_map = students.set_index("id")["name"].to_dict() if not students.empty else {}
+        student_ids = list(students["id"]) if not students.empty else []
+        lessons_cal["學生"] = lessons_cal["student_id"].map(name_map)
+
+        lessons_by_date = {}
+        for _, row in lessons_cal.iterrows():
+            d = row["date_parsed"].date()
+            if d not in lessons_by_date:
+                lessons_by_date[d] = []
+            lessons_by_date[d].append(row)
+
+        # 每天課程按開始時間排序
+        for d in lessons_by_date:
+            lessons_by_date[d] = sorted(
+                lessons_by_date[d],
+                key=lambda x: str(x.get("start", ""))
+            )
+
+        year = st.session_state.cal_year
+        month = st.session_state.cal_month
+        first_day = date(year, month, 1)
+        days_in_month = calendar.monthrange(year, month)[1]
+        first_weekday = first_day.weekday()
+
+        html = """
+        <style>
+        .cal-container { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; }
+        .cal-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+        .cal-table th { background: #F0F2F6; padding: 8px 4px; text-align: center; font-weight: 600; font-size: 14px; color: #333; border: 1px solid #E0E0E0; }
+        .cal-table td { border: 1px solid #E0E0E0; padding: 4px; vertical-align: top; height: 110px; width: 14.28%; }
+        .cal-day-num { font-weight: bold; font-size: 14px; color: #333; margin-bottom: 4px; }
+        .cal-today { background: #FFF8E1; }
+        .cal-lesson { display: block; font-size: 11px; padding: 2px 4px; margin-bottom: 2px; border-radius: 3px; color: white; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .cal-legend { margin-top: 16px; padding: 12px; background: #F8F9FA; border-radius: 8px; }
+        .cal-legend-item { display: inline-block; margin-right: 16px; margin-bottom: 6px; font-size: 13px; }
+        .cal-legend-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+        </style>
+        <div class="cal-container">
+        <table class="cal-table">
+        <thead>
+        <tr><th>一</th><th>二</th><th>三</th><th>四</th><th>五</th><th>六</th><th>日</th></tr>
+        </thead>
+        <tbody>
+        """
+
+        total_cells = first_weekday + days_in_month
+        total_weeks = (total_cells + 6) // 7
+
+        current_day = 1
+        today_date = date.today()
+
+        for week in range(total_weeks):
+            html += "<tr>"
+            for wd in range(7):
+                cell_index = week * 7 + wd
+                if cell_index < first_weekday or current_day > days_in_month:
+                    html += "<td></td>"
+                else:
+                    d = date(year, month, current_day)
+                    is_today = (d == today_date)
+                    td_class = ' class="cal-today"' if is_today else ""
+                    html += f'<td{td_class}>'
+                    html += f'<div class="cal-day-num">{current_day}</div>'
+
+                    if d in lessons_by_date:
+                        for lesson in lessons_by_date[d][:4]:
+                            color = get_student_color(lesson["student_id"], student_ids)
+                            name = lesson.get("學生", "")
+                            start_t = lesson.get("start", "")
+                            ltype = lesson.get("type", "")
+                            title = f"{start_t} {name} {ltype}"
+                            html += f'<span class="cal-lesson" style="background:{color};" title="{title}">{title}</span>'
+
+                        if len(lessons_by_date[d]) > 4:
+                            html += f'<div style="font-size:10px;color:#666;">+{len(lessons_by_date[d]) - 4} 更多</div>'
+
+                    html += "</td>"
+                    current_day += 1
+            html += "</tr>"
+
+        html += "</tbody></table>"
+        html += '<div class="cal-legend"><strong>學生顏色對應：</strong><br>'
+        if not students.empty:
+            for i, (_, s) in enumerate(students.iterrows()):
+                color = STUDENT_COLORS[i % len(STUDENT_COLORS)]
+                html += f'<span class="cal-legend-item"><span class="cal-legend-dot" style="background:{color};"></span>{s["name"]}</span>'
+        html += "</div></div>"
+
+        components.html(html, height=800, scrolling=True)
+
+        st.markdown("---")
+        st.subheader("📋 查看某日課程")
+
+        if not lessons_cal.empty:
+            available_dates = sorted(lessons_by_date.keys())
+            date_options = [d.strftime("%Y-%m-%d（週" + ['一', '二', '三', '四', '五', '六', '日'][d.weekday()] + "）") for d in available_dates]
+            selected_date_str = st.selectbox("選擇日期", date_options)
+            selected_idx = date_options.index(selected_date_str)
+            selected_date = available_dates[selected_idx]
+
+            st.markdown(f"### 📅 {selected_date.strftime('%Y-%m-%d')}（週{['一', '二', '三', '四', '五', '六', '日'][selected_date.weekday()]}）")
+
+            day_lessons = lessons_by_date[selected_date]
+            for lesson in day_lessons:
+                color = get_student_color(lesson["student_id"], student_ids)
+                with st.container():
+                    c1, c2, c3, c4 = st.columns([1, 2, 2, 2])
+                    with c1:
+                        st.markdown(f'<div style="background:{color};width:20px;height:20px;border-radius:50%;"></div>', unsafe_allow_html=True)
+                    with c2:
+                        st.markdown(f"**{lesson.get('start')}-{lesson.get('end')}**")
+                    with c3:
+                        st.markdown(f"**{lesson.get('學生', '')}**　{lesson.get('type', '')}")
+                    with c4:
+                        st.markdown(f"{lesson.get('status', '')}")
+                    if lesson.get("note"):
+                        st.caption(f"📝 {lesson['note']}")
+        else:
+            st.info("這個月沒有課程")
+
+# ---------- 上課進度 ----------
+elif menu == "📊 上課進度":
+    st.title("📊 上課進度紀錄")
+
+    if students.empty:
+        st.warning("請先新增學生")
+    else:
+        col1, col2 = st.columns(2)
+        with col1:
+            student = st.selectbox("選擇學生", students["name"])
+            sid = int(students[students["name"] == student]["id"].values[0])
+
+        my_lessons = lessons[lessons["student_id"] == sid].copy() if not lessons.empty else pd.DataFrame()
+
+        if my_lessons.empty:
+            st.info("該學生尚無課程")
+        else:
+            my_lessons["date_parsed"] = parse_date_safe(my_lessons["date"])
+            my_lessons = my_lessons.sort_values("date_parsed", ascending=False)
+            today = pd.Timestamp(date.today())
+            recordable = my_lessons[my_lessons["date_parsed"] <= today]
+
+            if recordable.empty:
+                st.info("尚無已發生的課程可記錄")
+            else:
+                options = {}
+                for _, row in recordable.iterrows():
+                    d_str = row["date_parsed"].strftime("%Y-%m-%d") if pd.notna(row["date_parsed"]) else str(row["date"])
+                    label = f"{d_str} {row['start']}-{row['end']}（{row.get('type', '')}）"
+                    options[label] = int(row["id"])
+
+                selected_label = st.selectbox("選擇課程", list(options.keys()))
+                lesson_id = options[selected_label]
+                existing = progress_df[progress_df["lesson_id"].astype(str) == str(lesson_id)] if not progress_df.empty else pd.DataFrame()
+
+                if not existing.empty:
+                    ex = existing.iloc[0]
+                    default_content = str(ex.get("content", ""))
+                    default_homework = str(ex.get("homework", ""))
+                    default_note = str(ex.get("note", ""))
+                    st.info("📝 這堂課已有紀錄，修改後會覆蓋")
+                else:
+                    default_content = ""
+                    default_homework = ""
+                    default_note = ""
+
+                with st.form("progress_form"):
+                    content = st.text_area("上課內容 / 進度", value=default_content, height=150)
+                    homework = st.text_area("作業", value=default_homework, height=100)
+                    note = st.text_area("備註", value=default_note, height=80)
+
+                    if st.form_submit_button("💾 儲存進度", use_container_width=True):
+                        if not content.strip():
+                            st.error("請填寫上課內容")
+                        else:
+                            lesson_row = recordable[recordable["id"] == lesson_id].iloc[0]
+                            d_str = lesson_row["date_parsed"].strftime("%Y-%m-%d") if pd.notna(lesson_row["date_parsed"]) else str(lesson_row["date"])
+                            if not existing.empty:
+                                progress_df.loc[progress_df["lesson_id"].astype(str) == str(lesson_id), "content"] = content
+                                progress_df.loc[progress_df["lesson_id"].astype(str) == str(lesson_id), "homework"] = homework
+                                progress_df.loc[progress_df["lesson_id"].astype(str) == str(lesson_id), "note"] = note
+                            else:
+                                new_id = safe_next_id(progress_df)
+                                new_row = pd.DataFrame([[
+                                    new_id, sid, lesson_id, d_str, content, homework, note,
+                                    datetime.now().strftime("%Y-%m-%d %H:%M")
+                                ]], columns=PROG_COLS)
+                                progress_df = pd.concat([progress_df, new_row], ignore_index=True)
+                            save_data(progress_df, "progress")
+                            st.success("✅ 進度已儲存")
+                            st.rerun()
+
+        st.markdown("---")
+        st.subheader("📚 已記錄的進度")
+        my_progress = progress_df[progress_df["student_id"].astype(str) == str(sid)] if not progress_df.empty else pd.DataFrame()
+
+        if my_progress.empty:
+            st.info("尚無進度紀錄")
+        else:
+            my_progress = my_progress.copy()
+            my_progress["date_parsed"] = parse_date_safe(my_progress["date"])
+            my_progress = my_progress.sort_values("date_parsed", ascending=False)
+            for _, row in my_progress.iterrows():
+                with st.container():
+                    st.markdown(f"### 📅 {row.get('date', '')}")
+                    st.markdown(f"**📖 上課內容：**")
+                    st.markdown(f"{row.get('content', '')}")
+                    if row.get("homework"):
+                        st.markdown(f"**📝 作業：** {row['homework']}")
+                    if row.get("note"):
+                        st.caption(f"💬 {row['note']}")
+                    st.caption(f"記錄時間：{row.get('created_at', '')}")
+                    st.markdown("---")
+
 # ---------- 學生管理 ----------
 elif menu == "👤 學生管理":
     st.title("👤 學生管理")
@@ -244,6 +499,292 @@ elif menu == "👤 學生管理":
             students = students[students["id"] != del_id]
             save_data(students, "students")
             st.rerun()
+
+# ---------- 補課管理 ----------
+elif menu == "🔄 補課管理":
+    st.title("🔄 補課管理")
+
+    st.subheader("標記請假課程")
+    if lessons.empty:
+        st.info("尚無課程可操作")
+    else:
+        pending = lessons[lessons["status"] == "已排定"].copy()
+        if not pending.empty:
+            name_map = students.set_index("id")["name"].to_dict() if not students.empty else {}
+            pending["學生"] = pending["student_id"].map(name_map)
+            pending["date_parsed"] = parse_date_safe(pending["date"])
+
+            pending_options = {}
+            for _, row in pending.sort_values("date_parsed").iterrows():
+                d_str = row["date_parsed"].strftime("%Y-%m-%d") if pd.notna(row["date_parsed"]) else str(row.get("date", ""))
+                label = f"[{row['id']}] {d_str} {row.get('start', '')}-{row.get('end', '')} {row.get('學生', '')}（{row.get('type', '')}）"
+                pending_options[label] = int(row["id"])
+
+            selected = st.selectbox("選擇要請假的課程", list(pending_options.keys()))
+            lid = pending_options[selected]
+
+            if st.button("標記為待補課"):
+                lessons.loc[lessons["id"] == lid, "status"] = "待補課"
+                save_data(lessons, "lessons")
+                st.success(f"✅ 已標記課程 ID = {lid} 為待補課")
+                st.rerun()
+        else:
+            st.info("目前沒有已排定的課程")
+
+    st.markdown("---")
+    st.subheader("待補課清單")
+    todo = lessons[lessons["status"] == "待補課"]
+    if todo.empty:
+        st.success("沒有待補課項目 🎉")
+    else:
+        todo_view = todo.copy()
+        name_map = students.set_index("id")["name"].to_dict() if not students.empty else {}
+        todo_view["學生"] = todo_view["student_id"].map(name_map)
+        st.dataframe(todo_view[["id", "date", "start", "end", "學生", "type", "note"]], use_container_width=True)
+
+        st.markdown("### 安排補課")
+        todo = todo.copy()
+        todo["date_parsed"] = parse_date_safe(todo["date"])
+        todo_options = {}
+        for _, row in todo.sort_values("date_parsed").iterrows():
+            d_str = row["date_parsed"].strftime("%Y-%m-%d") if pd.notna(row["date_parsed"]) else str(row.get("date", ""))
+            label = f"[{row['id']}] {d_str} {row.get('start', '')}-{row.get('end', '')} {row.get('學生', '')}"
+            todo_options[label] = int(row["id"])
+
+        with st.form("makeup"):
+            selected_todo = st.selectbox("選擇要補的課程", list(todo_options.keys()))
+            lid = todo_options[selected_todo]
+            new_date = st.date_input("補課日期")
+            c1, c2 = st.columns(2)
+            ns = c1.time_input("開始", value=datetime.strptime("19:00", "%H:%M").time())
+            ne = c2.time_input("結束", value=datetime.strptime("20:00", "%H:%M").time())
+
+            if st.form_submit_button("建立補課"):
+                sid = int(lessons[lessons["id"] == lid]["student_id"].values[0])
+                new_id = safe_next_id(lessons)
+                new_row = pd.DataFrame(
+                    [[new_id, sid, str(new_date), ns.strftime("%H:%M"), ne.strftime("%H:%M"), "補課", "已排定", f"補原課程 {lid}"]],
+                    columns=LESSON_COLS
+                )
+                lessons = pd.concat([lessons, new_row], ignore_index=True)
+                lessons.loc[lessons["id"] == lid, "status"] = "已補課"
+                save_data(lessons, "lessons")
+                st.success(f"✅ 補課已建立（新課程 ID = {new_id}）")
+                st.rerun()
+
+# ---------- 調課管理 ----------
+elif menu == "🔀 調課管理":
+    st.title("🔀 調課管理")
+    st.caption("將原課程調到新時間，系統會自動標記原課為已調課")
+
+    if lessons.empty or students.empty:
+        st.info("尚無課程可調")
+    else:
+        name_map = students.set_index("id")["name"].to_dict()
+        lessons_avail = lessons[lessons["status"].astype(str) == "已排定"].copy()
+        lessons_avail["學生"] = lessons_avail["student_id"].map(name_map)
+        lessons_avail["date_parsed"] = parse_date_safe(lessons_avail["date"])
+        lessons_avail = lessons_avail.dropna(subset=["date_parsed"])
+        lessons_avail = lessons_avail.sort_values("date_parsed")
+
+        if lessons_avail.empty:
+            st.info("目前沒有可調的課程（已排定）")
+        else:
+            st.subheader("📋 選擇要調的課程")
+            options = {}
+            for _, row in lessons_avail.iterrows():
+                d_str = row["date_parsed"].strftime("%Y-%m-%d")
+                label = f"[{row['id']}] {d_str} {row.get('start', '')}-{row.get('end', '')} {row.get('學生', '')}（{row.get('type', '')}）"
+                options[label] = int(row["id"])
+
+            selected = st.selectbox("原課程", list(options.keys()))
+            old_lesson_id = options[selected]
+            old_lesson = lessons[lessons["id"] == old_lesson_id].iloc[0]
+
+            st.info(f"📌 原課程：{old_lesson['date']} {old_lesson['start']}-{old_lesson['end']}，學生：{name_map.get(int(old_lesson['student_id']), '')}")
+
+            st.markdown("---")
+            st.subheader("🆕 新時間")
+
+            with st.form("reschedule_form"):
+                new_date = st.date_input("新日期", value=date.today())
+                c1, c2 = st.columns(2)
+                new_start = c1.time_input("新開始時間", value=datetime.strptime(old_lesson["start"], "%H:%M").time())
+                new_end = c2.time_input("新結束時間", value=datetime.strptime(old_lesson["end"], "%H:%M").time())
+                reason = st.text_input("調課原因（可選）")
+
+                if st.form_submit_button("🔀 確認調課", type="primary"):
+                    old_note = str(lessons.loc[lessons["id"] == old_lesson_id, "note"].values[0]) if "note" in lessons.columns else ""
+                    lessons.loc[lessons["id"] == old_lesson_id, "status"] = "已調課"
+                    lessons.loc[lessons["id"] == old_lesson_id, "note"] = (old_note + f" | 調至 {new_date} {new_start}").strip(" |")
+
+                    new_id = safe_next_id(lessons)
+                    note_text = f"原課程 ID {old_lesson_id}"
+                    if reason:
+                        note_text += f"（{reason}）"
+
+                    new_row = pd.DataFrame([[
+                        new_id,
+                        int(old_lesson["student_id"]),
+                        str(new_date),
+                        new_start.strftime("%H:%M"),
+                        new_end.strftime("%H:%M"),
+                        "調課",
+                        "已排定",
+                        note_text
+                    ]], columns=LESSON_COLS)
+
+                    lessons = pd.concat([lessons, new_row], ignore_index=True)
+                    save_data(lessons, "lessons")
+
+                    st.success(f"✅ 調課成功！原課程 ID {old_lesson_id} → 已調課；新課程 ID {new_id}")
+                    st.rerun()
+
+# ---------- 檔案管理 ----------
+elif menu == "📁 檔案管理":
+    st.title("📁 檔案管理")
+    st.caption("為每位學生建立專屬資料夾，上傳教材、講義、筆記")
+
+    if students.empty:
+        st.warning("請先新增學生")
+    else:
+        student = st.selectbox("選擇學生", students["name"])
+        sid = int(students[students["name"] == student]["id"].values[0])
+        student_row = students[students["id"] == sid].iloc[0]
+
+        try:
+            service = get_drive_service()
+            folder_id = get_student_folder(service, student_row)
+            st.success(f"📁 學生資料夾：S{sid:03d}_{student}")
+
+            st.markdown("---")
+            st.subheader("⬆️ 上傳檔案")
+            uploaded_file = st.file_uploader("選擇檔案", key="teacher_upload")
+            col1, col2 = st.columns(2)
+            with col1:
+                subject_folder = st.selectbox("分類", ["教材", "筆記", "作業", "講義", "其他"], key="upload_category")
+            with col2:
+                if uploaded_file is not None:
+                    st.caption(f"檔案大小：{uploaded_file.size / 1024:.1f} KB")
+
+            if uploaded_file is not None:
+                if st.button("📤 上傳", type="primary"):
+                    try:
+                        sub_folder_id = find_or_create_folder(service, subject_folder, folder_id)
+                        upload_file(service, sub_folder_id, uploaded_file.name,
+                                    uploaded_file.getvalue(),
+                                    uploaded_file.type or "application/octet-stream")
+                        st.success(f"✅ 已上傳：{uploaded_file.name}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"上傳失敗：{e}")
+
+            st.markdown("---")
+            st.subheader("📂 已上傳的檔案")
+
+            subfolders = service.files().list(
+                q=f"'{folder_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
+                fields="files(id, name)"
+            ).execute().get("files", [])
+
+            if not subfolders:
+                st.info("尚未建立任何分類資料夾")
+            else:
+                for subfolder in subfolders:
+                    with st.expander(f"📁 {subfolder['name']}", expanded=False):
+                        files = list_files(service, subfolder["id"])
+                        if not files:
+                            st.caption("（空）")
+                        else:
+                            for f in files:
+                                c1, c2, c3 = st.columns([4, 1, 1])
+                                with c1:
+                                    size_kb = int(f.get("size", 0)) / 1024 if f.get("size") else 0
+                                    st.markdown(f"📄 **{f['name']}** （{size_kb:.1f} KB）")
+                                with c2:
+                                    st.markdown(f"[🔗 開啟]({f.get('webViewLink', '#')})")
+                                with c3:
+                                    if st.button("🗑️", key=f"del_{f['id']}"):
+                                        try:
+                                            delete_file(service, f["id"])
+                                            st.success("已刪除")
+                                            st.rerun()
+                                        except Exception as e:
+                                            st.error(f"刪除失敗：{e}")
+        except Exception as e:
+            st.error(f"Drive 連線失敗：{e}")
+
+# ---------- 申請審核 ----------
+elif menu == "📋 申請審核":
+    st.title("📋 申請審核")
+
+    if requests_df.empty:
+        st.info("目前沒有申請")
+    else:
+        pending = requests_df[requests_df["status"] == "待處理"]
+        if pending.empty:
+            st.success("🎉 沒有待處理的申請")
+
+        st.subheader(f"⏳ 待處理申請（{len(pending)} 筆）")
+
+        name_map = students.set_index("id")["name"].to_dict() if not students.empty else {}
+        lesson_map = lessons.set_index("id").to_dict("index") if not lessons.empty else {}
+
+        for idx, row in pending.iterrows():
+            req_id = row["id"]
+            sid = row["student_id"]
+            student_name = name_map.get(int(sid) if str(sid).isdigit() else sid, f"學生 {sid}")
+
+            with st.container():
+                st.markdown(f"### 📝 {row['type']} — {student_name}")
+                col1, col2 = st.columns([2, 1])
+                with col1:
+                    st.markdown(f"**原因：** {row.get('reason', '（無）')}")
+                    st.markdown(f"**送出時間：** {row.get('created_at', '')}")
+                    if row["type"] == "請假":
+                        orig_id = row.get("original_lesson_id")
+                        if str(orig_id).isdigit() and int(orig_id) in lesson_map:
+                            orig = lesson_map[int(orig_id)]
+                            st.info(f"📅 原課程：{orig.get('date')} {orig.get('start')}-{orig.get('end')}（{orig.get('type')}）")
+                with col2:
+                    teacher_note = st.text_input("老師備註", key=f"note_{req_id}")
+
+                c1, c2, c3 = st.columns([1, 1, 3])
+                with c1:
+                    if st.button("✅ 同意", key=f"approve_{req_id}", use_container_width=True):
+                        requests_df.loc[requests_df["id"] == req_id, "status"] = "已同意"
+                        requests_df.loc[requests_df["id"] == req_id, "teacher_note"] = teacher_note
+                        if row["type"] == "請假":
+                            orig_id = row.get("original_lesson_id")
+                            if str(orig_id).isdigit():
+                                lessons.loc[lessons["id"] == int(orig_id), "status"] = "待補課"
+                                save_data(lessons, "lessons")
+                        save_data(requests_df, "requests")
+                        st.success("已同意")
+                        st.rerun()
+
+                with c2:
+                    if st.button("❌ 拒絕", key=f"reject_{req_id}", use_container_width=True):
+                        requests_df.loc[requests_df["id"] == req_id, "status"] = "已拒絕"
+                        requests_df.loc[requests_df["id"] == req_id, "teacher_note"] = teacher_note
+                        save_data(requests_df, "requests")
+                        st.success("已拒絕")
+                        st.rerun()
+
+                st.markdown("---")
+
+        with st.expander("📜 查看歷史紀錄"):
+            history = requests_df[requests_df["status"] != "待處理"].copy()
+            if history.empty:
+                st.info("沒有歷史紀錄")
+            else:
+                history["學生"] = history["student_id"].apply(
+                    lambda x: name_map.get(int(x) if str(x).isdigit() else x, f"學生 {x}")
+                )
+                st.dataframe(
+                    history[["id", "學生", "type", "status", "created_at", "teacher_note"]],
+                    use_container_width=True
+                )
 
 # ---------- 課程排程 ----------
 elif menu == "📅 課程排程":
@@ -302,7 +843,46 @@ elif menu == "📅 課程排程":
         if view.empty:
             st.info("沒有符合的課程")
         else:
-            st.dataframe(view[["id", "date", "start", "end", "學生", "type", "status", "note"]], use_container_width=True)
+            st.caption("💡 點擊 note 欄位即可編輯，編輯後按下方「💾 儲存變更」")
+            edit_cols = ["id", "date", "start", "end", "學生", "type", "status", "note"]
+            edit_df = view[edit_cols].copy()
+
+            edited = st.data_editor(
+                edit_df,
+                use_container_width=True,
+                hide_index=True,
+                disabled=["id", "date", "start", "end", "學生", "type", "status"],
+                column_config={
+                    "id": st.column_config.NumberColumn("ID", width="small"),
+                    "date": st.column_config.TextColumn("日期", width="small"),
+                    "start": st.column_config.TextColumn("開始", width="small"),
+                    "end": st.column_config.TextColumn("結束", width="small"),
+                    "學生": st.column_config.TextColumn("學生", width="small"),
+                    "type": st.column_config.TextColumn("類型", width="small"),
+                    "status": st.column_config.TextColumn("狀態", width="small"),
+                    "note": st.column_config.TextColumn("備註", width="large"),
+                },
+                key="lesson_editor",
+            )
+
+            if st.button("💾 儲存變更", type="primary"):
+                changed = False
+                for _, row in edited.iterrows():
+                    lid = int(row["id"])
+                    new_note = str(row["note"]) if pd.notna(row["note"]) else ""
+                    old_rows = lessons[lessons["id"] == lid]
+                    old_note = str(old_rows["note"].values[0]) if not old_rows.empty else ""
+
+                    if new_note != old_note:
+                        lessons.loc[lessons["id"] == lid, "note"] = new_note
+                        changed = True
+
+                if changed:
+                    save_data(lessons, "lessons")
+                    st.success("✅ 備註已更新")
+                    st.rerun()
+                else:
+                    st.info("沒有變更")
 
         st.markdown("---")
         st.subheader("🗑️ 刪除課程")
@@ -420,547 +1000,6 @@ elif menu == "📆 週期排課":
                     save_data(new_lessons, "lessons")
                     st.success(f"✅ 已建立 {len(rows)} 堂課！")
                     st.balloons()
-
-# ---------- 調課管理 ----------
-elif menu == "🔀 調課管理":
-    st.title("🔀 調課管理")
-    st.caption("將原課程調到新時間，系統會自動標記原課為已調課")
-
-    if lessons.empty or students.empty:
-        st.info("尚無課程可調")
-    else:
-        name_map = students.set_index("id")["name"].to_dict()
-        lessons_avail = lessons[lessons["status"].astype(str) == "已排定"].copy()
-        lessons_avail["學生"] = lessons_avail["student_id"].map(name_map)
-        lessons_avail["date_parsed"] = parse_date_safe(lessons_avail["date"])
-        lessons_avail = lessons_avail.dropna(subset=["date_parsed"])
-        lessons_avail = lessons_avail.sort_values("date_parsed")
-
-        if lessons_avail.empty:
-            st.info("目前沒有可調的課程（已排定）")
-        else:
-            st.subheader("📋 選擇要調的課程")
-            options = {}
-            for _, row in lessons_avail.iterrows():
-                d_str = row["date_parsed"].strftime("%Y-%m-%d")
-                label = f"[{row['id']}] {d_str} {row.get('start', '')}-{row.get('end', '')} {row.get('學生', '')}（{row.get('type', '')}）"
-                options[label] = int(row["id"])
-
-            selected = st.selectbox("原課程", list(options.keys()))
-            old_lesson_id = options[selected]
-            old_lesson = lessons[lessons["id"] == old_lesson_id].iloc[0]
-
-            st.info(f"📌 原課程：{old_lesson['date']} {old_lesson['start']}-{old_lesson['end']}，學生：{name_map.get(int(old_lesson['student_id']), '')}")
-
-            st.markdown("---")
-            st.subheader("🆕 新時間")
-
-            with st.form("reschedule_form"):
-                new_date = st.date_input("新日期", value=date.today())
-                c1, c2 = st.columns(2)
-                new_start = c1.time_input("新開始時間", value=datetime.strptime(old_lesson["start"], "%H:%M").time())
-                new_end = c2.time_input("新結束時間", value=datetime.strptime(old_lesson["end"], "%H:%M").time())
-                reason = st.text_input("調課原因（可選）")
-
-                if st.form_submit_button("🔀 確認調課", type="primary"):
-                    old_note = str(lessons.loc[lessons["id"] == old_lesson_id, "note"].values[0]) if "note" in lessons.columns else ""
-                    lessons.loc[lessons["id"] == old_lesson_id, "status"] = "已調課"
-                    lessons.loc[lessons["id"] == old_lesson_id, "note"] = (old_note + f" | 調至 {new_date} {new_start}").strip(" |")
-
-                    new_id = safe_next_id(lessons)
-                    note_text = f"原課程 ID {old_lesson_id}"
-                    if reason:
-                        note_text += f"（{reason}）"
-
-                    new_row = pd.DataFrame([[
-                        new_id,
-                        int(old_lesson["student_id"]),
-                        str(new_date),
-                        new_start.strftime("%H:%M"),
-                        new_end.strftime("%H:%M"),
-                        "調課",
-                        "已排定",
-                        note_text
-                    ]], columns=LESSON_COLS)
-
-                    lessons = pd.concat([lessons, new_row], ignore_index=True)
-                    save_data(lessons, "lessons")
-
-                    st.success(f"✅ 調課成功！原課程 ID {old_lesson_id} → 已調課；新課程 ID {new_id}")
-                    st.rerun()
-
-# ---------- 月曆檢視 ----------
-elif menu == "🗓️ 月曆檢視":
-    st.title("🗓️ 月曆檢視")
-
-    if lessons.empty:
-        st.info("尚無課程")
-    else:
-        today = date.today()
-        if "cal_year" not in st.session_state:
-            st.session_state.cal_year = today.year
-        if "cal_month" not in st.session_state:
-            st.session_state.cal_month = today.month
-
-        col1, col2, col3 = st.columns([1, 3, 1])
-        with col1:
-            if st.button("◀ 上個月"):
-                if st.session_state.cal_month == 1:
-                    st.session_state.cal_month = 12
-                    st.session_state.cal_year -= 1
-                else:
-                    st.session_state.cal_month -= 1
-                st.rerun()
-        with col2:
-            st.markdown(f"<h2 style='text-align: center;'>{st.session_state.cal_year} 年 {st.session_state.cal_month} 月</h2>", unsafe_allow_html=True)
-        with col3:
-            if st.button("下個月 ▶"):
-                if st.session_state.cal_month == 12:
-                    st.session_state.cal_month = 1
-                    st.session_state.cal_year += 1
-                else:
-                    st.session_state.cal_month += 1
-                st.rerun()
-
-        lessons_cal = lessons.copy()
-        lessons_cal["date_parsed"] = parse_date_safe(lessons_cal["date"])
-        lessons_cal = lessons_cal.dropna(subset=["date_parsed"])
-        lessons_cal = lessons_cal[
-            (lessons_cal["date_parsed"].dt.year == st.session_state.cal_year) &
-            (lessons_cal["date_parsed"].dt.month == st.session_state.cal_month)
-        ]
-
-        name_map = students.set_index("id")["name"].to_dict() if not students.empty else {}
-        student_ids = list(students["id"]) if not students.empty else []
-        lessons_cal["學生"] = lessons_cal["student_id"].map(name_map)
-
-        lessons_by_date = {}
-        for _, row in lessons_cal.iterrows():
-            d = row["date_parsed"].date()
-            if d not in lessons_by_date:
-                lessons_by_date[d] = []
-            lessons_by_date[d].append(row)
-
-        # ✅ 每天課程按開始時間排序
-        for d in lessons_by_date:
-            lessons_by_date[d] = sorted(
-                lessons_by_date[d],
-                key=lambda x: str(x.get("start", ""))
-            )
-
-        year = st.session_state.cal_year
-        month = st.session_state.cal_month
-        first_day = date(year, month, 1)
-        days_in_month = calendar.monthrange(year, month)[1]
-        first_weekday = first_day.weekday()
-
-        html = """
-        <style>
-        .cal-container { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; }
-        .cal-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-        .cal-table th { background: #F0F2F6; padding: 8px 4px; text-align: center; font-weight: 600; font-size: 14px; color: #333; border: 1px solid #E0E0E0; }
-        .cal-table td { border: 1px solid #E0E0E0; padding: 4px; vertical-align: top; height: 110px; width: 14.28%; }
-        .cal-day-num { font-weight: bold; font-size: 14px; color: #333; margin-bottom: 4px; }
-        .cal-today { background: #FFF8E1; }
-        .cal-lesson { display: block; font-size: 11px; padding: 2px 4px; margin-bottom: 2px; border-radius: 3px; color: white; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .cal-legend { margin-top: 16px; padding: 12px; background: #F8F9FA; border-radius: 8px; }
-        .cal-legend-item { display: inline-block; margin-right: 16px; margin-bottom: 6px; font-size: 13px; }
-        .cal-legend-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
-        </style>
-        <div class="cal-container">
-        <table class="cal-table">
-        <thead>
-        <tr><th>一</th><th>二</th><th>三</th><th>四</th><th>五</th><th>六</th><th>日</th></tr>
-        </thead>
-        <tbody>
-        """
-
-        total_cells = first_weekday + days_in_month
-        total_weeks = (total_cells + 6) // 7
-
-        current_day = 1
-        today_date = date.today()
-
-        for week in range(total_weeks):
-            html += "<tr>"
-            for wd in range(7):
-                cell_index = week * 7 + wd
-                if cell_index < first_weekday or current_day > days_in_month:
-                    html += "<td></td>"
-                else:
-                    d = date(year, month, current_day)
-                    is_today = (d == today_date)
-                    td_class = ' class="cal-today"' if is_today else ""
-                    html += f'<td{td_class}>'
-                    html += f'<div class="cal-day-num">{current_day}</div>'
-
-                    if d in lessons_by_date:
-                        for lesson in lessons_by_date[d][:4]:
-                            color = get_student_color(lesson["student_id"], student_ids)
-                            name = lesson.get("學生", "")
-                            start_t = lesson.get("start", "")
-                            ltype = lesson.get("type", "")
-                            title = f"{start_t} {name} {ltype}"
-                            html += f'<span class="cal-lesson" style="background:{color};" title="{title}">{title}</span>'
-
-                        if len(lessons_by_date[d]) > 4:
-                            html += f'<div style="font-size:10px;color:#666;">+{len(lessons_by_date[d]) - 4} 更多</div>'
-
-                    html += "</td>"
-                    current_day += 1
-            html += "</tr>"
-
-        html += "</tbody></table>"
-        html += '<div class="cal-legend"><strong>學生顏色對應：</strong><br>'
-        if not students.empty:
-            for i, (_, s) in enumerate(students.iterrows()):
-                color = STUDENT_COLORS[i % len(STUDENT_COLORS)]
-                html += f'<span class="cal-legend-item"><span class="cal-legend-dot" style="background:{color};"></span>{s["name"]}</span>'
-        html += "</div></div>"
-
-        components.html(html, height=800, scrolling=True)
-
-        st.markdown("---")
-        st.subheader("📋 查看某日課程")
-
-        if not lessons_cal.empty:
-            available_dates = sorted(lessons_by_date.keys())
-            date_options = [d.strftime("%Y-%m-%d（週" + ['一', '二', '三', '四', '五', '六', '日'][d.weekday()] + "）") for d in available_dates]
-            selected_date_str = st.selectbox("選擇日期", date_options)
-            selected_idx = date_options.index(selected_date_str)
-            selected_date = available_dates[selected_idx]
-
-            st.markdown(f"### 📅 {selected_date.strftime('%Y-%m-%d')}（週{['一', '二', '三', '四', '五', '六', '日'][selected_date.weekday()]}）")
-
-            day_lessons = lessons_by_date[selected_date]
-            for lesson in day_lessons:
-                color = get_student_color(lesson["student_id"], student_ids)
-                with st.container():
-                    c1, c2, c3, c4 = st.columns([1, 2, 2, 2])
-                    with c1:
-                        st.markdown(f'<div style="background:{color};width:20px;height:20px;border-radius:50%;"></div>', unsafe_allow_html=True)
-                    with c2:
-                        st.markdown(f"**{lesson.get('start')}-{lesson.get('end')}**")
-                    with c3:
-                        st.markdown(f"**{lesson.get('學生', '')}**　{lesson.get('type', '')}")
-                    with c4:
-                        st.markdown(f"{lesson.get('status', '')}")
-                    if lesson.get("note"):
-                        st.caption(f"📝 {lesson['note']}")
-        else:
-            st.info("這個月沒有課程")
-
-# ---------- 補課管理 ----------
-elif menu == "🔄 補課管理":
-    st.title("🔄 補課管理")
-
-    st.subheader("標記請假課程")
-    if lessons.empty:
-        st.info("尚無課程可操作")
-    else:
-        pending = lessons[lessons["status"] == "已排定"].copy()
-        if not pending.empty:
-            name_map = students.set_index("id")["name"].to_dict() if not students.empty else {}
-            pending["學生"] = pending["student_id"].map(name_map)
-            pending["date_parsed"] = parse_date_safe(pending["date"])
-
-            pending_options = {}
-            for _, row in pending.sort_values("date_parsed").iterrows():
-                d_str = row["date_parsed"].strftime("%Y-%m-%d") if pd.notna(row["date_parsed"]) else str(row.get("date", ""))
-                label = f"[{row['id']}] {d_str} {row.get('start', '')}-{row.get('end', '')} {row.get('學生', '')}（{row.get('type', '')}）"
-                pending_options[label] = int(row["id"])
-
-            selected = st.selectbox("選擇要請假的課程", list(pending_options.keys()))
-            lid = pending_options[selected]
-
-            if st.button("標記為待補課"):
-                lessons.loc[lessons["id"] == lid, "status"] = "待補課"
-                save_data(lessons, "lessons")
-                st.success(f"✅ 已標記課程 ID = {lid} 為待補課")
-                st.rerun()
-        else:
-            st.info("目前沒有已排定的課程")
-
-    st.markdown("---")
-    st.subheader("待補課清單")
-    todo = lessons[lessons["status"] == "待補課"]
-    if todo.empty:
-        st.success("沒有待補課項目 🎉")
-    else:
-        todo_view = todo.copy()
-        name_map = students.set_index("id")["name"].to_dict() if not students.empty else {}
-        todo_view["學生"] = todo_view["student_id"].map(name_map)
-        st.dataframe(todo_view[["id", "date", "start", "end", "學生", "type", "note"]], use_container_width=True)
-
-        st.markdown("### 安排補課")
-        todo = todo.copy()
-        todo["date_parsed"] = parse_date_safe(todo["date"])
-        todo_options = {}
-        for _, row in todo.sort_values("date_parsed").iterrows():
-            d_str = row["date_parsed"].strftime("%Y-%m-%d") if pd.notna(row["date_parsed"]) else str(row.get("date", ""))
-            label = f"[{row['id']}] {d_str} {row.get('start', '')}-{row.get('end', '')} {row.get('學生', '')}"
-            todo_options[label] = int(row["id"])
-
-        with st.form("makeup"):
-            selected_todo = st.selectbox("選擇要補的課程", list(todo_options.keys()))
-            lid = todo_options[selected_todo]
-            new_date = st.date_input("補課日期")
-            c1, c2 = st.columns(2)
-            ns = c1.time_input("開始", value=datetime.strptime("19:00", "%H:%M").time())
-            ne = c2.time_input("結束", value=datetime.strptime("20:00", "%H:%M").time())
-
-            if st.form_submit_button("建立補課"):
-                sid = int(lessons[lessons["id"] == lid]["student_id"].values[0])
-                new_id = safe_next_id(lessons)
-                new_row = pd.DataFrame(
-                    [[new_id, sid, str(new_date), ns.strftime("%H:%M"), ne.strftime("%H:%M"), "補課", "已排定", f"補原課程 {lid}"]],
-                    columns=LESSON_COLS
-                )
-                lessons = pd.concat([lessons, new_row], ignore_index=True)
-                lessons.loc[lessons["id"] == lid, "status"] = "已補課"
-                save_data(lessons, "lessons")
-                st.success(f"✅ 補課已建立（新課程 ID = {new_id}）")
-                st.rerun()
-
-# ---------- 申請審核 ----------
-elif menu == "📋 申請審核":
-    st.title("📋 申請審核")
-
-    if requests_df.empty:
-        st.info("目前沒有申請")
-    else:
-        pending = requests_df[requests_df["status"] == "待處理"]
-        if pending.empty:
-            st.success("🎉 沒有待處理的申請")
-
-        st.subheader(f"⏳ 待處理申請（{len(pending)} 筆）")
-
-        name_map = students.set_index("id")["name"].to_dict() if not students.empty else {}
-        lesson_map = lessons.set_index("id").to_dict("index") if not lessons.empty else {}
-
-        for idx, row in pending.iterrows():
-            req_id = row["id"]
-            sid = row["student_id"]
-            student_name = name_map.get(int(sid) if str(sid).isdigit() else sid, f"學生 {sid}")
-
-            with st.container():
-                st.markdown(f"### 📝 {row['type']} — {student_name}")
-                col1, col2 = st.columns([2, 1])
-                with col1:
-                    st.markdown(f"**原因：** {row.get('reason', '（無）')}")
-                    st.markdown(f"**送出時間：** {row.get('created_at', '')}")
-                    if row["type"] == "請假":
-                        orig_id = row.get("original_lesson_id")
-                        if str(orig_id).isdigit() and int(orig_id) in lesson_map:
-                            orig = lesson_map[int(orig_id)]
-                            st.info(f"📅 原課程：{orig.get('date')} {orig.get('start')}-{orig.get('end')}（{orig.get('type')}）")
-                with col2:
-                    teacher_note = st.text_input("老師備註", key=f"note_{req_id}")
-
-                c1, c2, c3 = st.columns([1, 1, 3])
-                with c1:
-                    if st.button("✅ 同意", key=f"approve_{req_id}", use_container_width=True):
-                        requests_df.loc[requests_df["id"] == req_id, "status"] = "已同意"
-                        requests_df.loc[requests_df["id"] == req_id, "teacher_note"] = teacher_note
-                        if row["type"] == "請假":
-                            orig_id = row.get("original_lesson_id")
-                            if str(orig_id).isdigit():
-                                lessons.loc[lessons["id"] == int(orig_id), "status"] = "待補課"
-                                save_data(lessons, "lessons")
-                        save_data(requests_df, "requests")
-                        st.success("已同意")
-                        st.rerun()
-
-                with c2:
-                    if st.button("❌ 拒絕", key=f"reject_{req_id}", use_container_width=True):
-                        requests_df.loc[requests_df["id"] == req_id, "status"] = "已拒絕"
-                        requests_df.loc[requests_df["id"] == req_id, "teacher_note"] = teacher_note
-                        save_data(requests_df, "requests")
-                        st.success("已拒絕")
-                        st.rerun()
-
-                st.markdown("---")
-
-        with st.expander("📜 查看歷史紀錄"):
-            history = requests_df[requests_df["status"] != "待處理"].copy()
-            if history.empty:
-                st.info("沒有歷史紀錄")
-            else:
-                history["學生"] = history["student_id"].apply(
-                    lambda x: name_map.get(int(x) if str(x).isdigit() else x, f"學生 {x}")
-                )
-                st.dataframe(
-                    history[["id", "學生", "type", "status", "created_at", "teacher_note"]],
-                    use_container_width=True
-                )
-
-# ---------- 上課進度 ----------
-elif menu == "📊 上課進度":
-    st.title("📊 上課進度紀錄")
-
-    if students.empty:
-        st.warning("請先新增學生")
-    else:
-        col1, col2 = st.columns(2)
-        with col1:
-            student = st.selectbox("選擇學生", students["name"])
-            sid = int(students[students["name"] == student]["id"].values[0])
-
-        my_lessons = lessons[lessons["student_id"] == sid].copy() if not lessons.empty else pd.DataFrame()
-
-        if my_lessons.empty:
-            st.info("該學生尚無課程")
-        else:
-            my_lessons["date_parsed"] = parse_date_safe(my_lessons["date"])
-            my_lessons = my_lessons.sort_values("date_parsed", ascending=False)
-            today = pd.Timestamp(date.today())
-            recordable = my_lessons[my_lessons["date_parsed"] <= today]
-
-            if recordable.empty:
-                st.info("尚無已發生的課程可記錄")
-            else:
-                options = {}
-                for _, row in recordable.iterrows():
-                    d_str = row["date_parsed"].strftime("%Y-%m-%d") if pd.notna(row["date_parsed"]) else str(row["date"])
-                    label = f"{d_str} {row['start']}-{row['end']}（{row.get('type', '')}）"
-                    options[label] = int(row["id"])
-
-                selected_label = st.selectbox("選擇課程", list(options.keys()))
-                lesson_id = options[selected_label]
-                existing = progress_df[progress_df["lesson_id"].astype(str) == str(lesson_id)] if not progress_df.empty else pd.DataFrame()
-
-                if not existing.empty:
-                    ex = existing.iloc[0]
-                    default_content = str(ex.get("content", ""))
-                    default_homework = str(ex.get("homework", ""))
-                    default_note = str(ex.get("note", ""))
-                    st.info("📝 這堂課已有紀錄，修改後會覆蓋")
-                else:
-                    default_content = ""
-                    default_homework = ""
-                    default_note = ""
-
-                with st.form("progress_form"):
-                    content = st.text_area("上課內容 / 進度", value=default_content, height=150)
-                    homework = st.text_area("作業", value=default_homework, height=100)
-                    note = st.text_area("備註", value=default_note, height=80)
-
-                    if st.form_submit_button("💾 儲存進度", use_container_width=True):
-                        if not content.strip():
-                            st.error("請填寫上課內容")
-                        else:
-                            lesson_row = recordable[recordable["id"] == lesson_id].iloc[0]
-                            d_str = lesson_row["date_parsed"].strftime("%Y-%m-%d") if pd.notna(lesson_row["date_parsed"]) else str(lesson_row["date"])
-                            if not existing.empty:
-                                progress_df.loc[progress_df["lesson_id"].astype(str) == str(lesson_id), "content"] = content
-                                progress_df.loc[progress_df["lesson_id"].astype(str) == str(lesson_id), "homework"] = homework
-                                progress_df.loc[progress_df["lesson_id"].astype(str) == str(lesson_id), "note"] = note
-                            else:
-                                new_id = safe_next_id(progress_df)
-                                new_row = pd.DataFrame([[
-                                    new_id, sid, lesson_id, d_str, content, homework, note,
-                                    datetime.now().strftime("%Y-%m-%d %H:%M")
-                                ]], columns=PROG_COLS)
-                                progress_df = pd.concat([progress_df, new_row], ignore_index=True)
-                            save_data(progress_df, "progress")
-                            st.success("✅ 進度已儲存")
-                            st.rerun()
-
-        st.markdown("---")
-        st.subheader("📚 已記錄的進度")
-        my_progress = progress_df[progress_df["student_id"].astype(str) == str(sid)] if not progress_df.empty else pd.DataFrame()
-
-        if my_progress.empty:
-            st.info("尚無進度紀錄")
-        else:
-            my_progress = my_progress.copy()
-            my_progress["date_parsed"] = parse_date_safe(my_progress["date"])
-            my_progress = my_progress.sort_values("date_parsed", ascending=False)
-            for _, row in my_progress.iterrows():
-                with st.container():
-                    st.markdown(f"### 📅 {row.get('date', '')}")
-                    st.markdown(f"**📖 上課內容：**")
-                    st.markdown(f"{row.get('content', '')}")
-                    if row.get("homework"):
-                        st.markdown(f"**📝 作業：** {row['homework']}")
-                    if row.get("note"):
-                        st.caption(f"💬 {row['note']}")
-                    st.caption(f"記錄時間：{row.get('created_at', '')}")
-                    st.markdown("---")
-
-# ---------- 檔案管理 ----------
-elif menu == "📁 檔案管理":
-    st.title("📁 檔案管理")
-    st.caption("為每位學生建立專屬資料夾，上傳教材、講義、筆記")
-
-    if students.empty:
-        st.warning("請先新增學生")
-    else:
-        student = st.selectbox("選擇學生", students["name"])
-        sid = int(students[students["name"] == student]["id"].values[0])
-        student_row = students[students["id"] == sid].iloc[0]
-
-        try:
-            service = get_drive_service()
-            folder_id = get_student_folder(service, student_row)
-            st.success(f"📁 學生資料夾：S{sid:03d}_{student}")
-
-            st.markdown("---")
-            st.subheader("⬆️ 上傳檔案")
-            uploaded_file = st.file_uploader("選擇檔案", key="teacher_upload")
-            col1, col2 = st.columns(2)
-            with col1:
-                subject_folder = st.selectbox("分類", ["教材", "筆記", "作業", "講義", "其他"], key="upload_category")
-            with col2:
-                if uploaded_file is not None:
-                    st.caption(f"檔案大小：{uploaded_file.size / 1024:.1f} KB")
-
-            if uploaded_file is not None:
-                if st.button("📤 上傳", type="primary"):
-                    try:
-                        sub_folder_id = find_or_create_folder(service, subject_folder, folder_id)
-                        upload_file(service, sub_folder_id, uploaded_file.name,
-                                    uploaded_file.getvalue(),
-                                    uploaded_file.type or "application/octet-stream")
-                        st.success(f"✅ 已上傳：{uploaded_file.name}")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"上傳失敗：{e}")
-
-            st.markdown("---")
-            st.subheader("📂 已上傳的檔案")
-
-            subfolders = service.files().list(
-                q=f"'{folder_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
-                fields="files(id, name)"
-            ).execute().get("files", [])
-
-            if not subfolders:
-                st.info("尚未建立任何分類資料夾")
-            else:
-                for subfolder in subfolders:
-                    with st.expander(f"📁 {subfolder['name']}", expanded=False):
-                        files = list_files(service, subfolder["id"])
-                        if not files:
-                            st.caption("（空）")
-                        else:
-                            for f in files:
-                                c1, c2, c3 = st.columns([4, 1, 1])
-                                with c1:
-                                    size_kb = int(f.get("size", 0)) / 1024 if f.get("size") else 0
-                                    st.markdown(f"📄 **{f['name']}** （{size_kb:.1f} KB）")
-                                with c2:
-                                    st.markdown(f"[🔗 開啟]({f.get('webViewLink', '#')})")
-                                with c3:
-                                    if st.button("🗑️", key=f"del_{f['id']}"):
-                                        try:
-                                            delete_file(service, f["id"])
-                                            st.success("已刪除")
-                                            st.rerun()
-                                        except Exception as e:
-                                            st.error(f"刪除失敗：{e}")
-        except Exception as e:
-            st.error(f"Drive 連線失敗：{e}")
 
 # ---------- 時數統計 ----------
 elif menu == "📈 時數統計":
