@@ -265,7 +265,6 @@ elif menu == "🗓️ 月曆檢視":
                 lessons_by_date[d] = []
             lessons_by_date[d].append(row)
 
-        # 每天課程按開始時間排序
         for d in lessons_by_date:
             lessons_by_date[d] = sorted(
                 lessons_by_date[d],
@@ -493,11 +492,20 @@ elif menu == "👤 學生管理":
     if students.empty:
         st.info("尚無學生資料")
     else:
-        st.dataframe(students, use_container_width=True)
-        del_id = st.selectbox("刪除學生 ID", students["id"])
-        if st.button("🗑️ 刪除"):
+        show_students = students[["name", "subject", "hourly_rate", "note"]].copy()
+        show_students.columns = ["姓名", "科目", "時薪", "備註"]
+        st.dataframe(show_students, use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+        st.subheader("🗑️ 刪除學生")
+        del_options = {f"{row['name']}（{row.get('subject', '')}）": int(row["id"]) for _, row in students.iterrows()}
+        selected_del = st.selectbox("選擇要刪除的學生", list(del_options.keys()))
+        del_id = del_options[selected_del]
+        confirm = st.checkbox("我確認要刪除這位學生", key="confirm_del_student")
+        if st.button("🗑️ 確定刪除", disabled=not confirm, type="primary"):
             students = students[students["id"] != del_id]
             save_data(students, "students")
+            st.success("已刪除")
             st.rerun()
 
 # ---------- 補課管理 ----------
@@ -517,7 +525,7 @@ elif menu == "🔄 補課管理":
             pending_options = {}
             for _, row in pending.sort_values("date_parsed").iterrows():
                 d_str = row["date_parsed"].strftime("%Y-%m-%d") if pd.notna(row["date_parsed"]) else str(row.get("date", ""))
-                label = f"[{row['id']}] {d_str} {row.get('start', '')}-{row.get('end', '')} {row.get('學生', '')}（{row.get('type', '')}）"
+                label = f"{d_str} {row.get('start', '')}-{row.get('end', '')} {row.get('學生', '')}（{row.get('type', '')}）"
                 pending_options[label] = int(row["id"])
 
             selected = st.selectbox("選擇要請假的課程", list(pending_options.keys()))
@@ -526,7 +534,7 @@ elif menu == "🔄 補課管理":
             if st.button("標記為待補課"):
                 lessons.loc[lessons["id"] == lid, "status"] = "待補課"
                 save_data(lessons, "lessons")
-                st.success(f"✅ 已標記課程 ID = {lid} 為待補課")
+                st.success("✅ 已標記為待補課")
                 st.rerun()
         else:
             st.info("目前沒有已排定的課程")
@@ -540,7 +548,9 @@ elif menu == "🔄 補課管理":
         todo_view = todo.copy()
         name_map = students.set_index("id")["name"].to_dict() if not students.empty else {}
         todo_view["學生"] = todo_view["student_id"].map(name_map)
-        st.dataframe(todo_view[["id", "date", "start", "end", "學生", "type", "note"]], use_container_width=True)
+        show_todo = todo_view[["date", "start", "end", "學生", "type", "note"]].copy()
+        show_todo.columns = ["日期", "開始", "結束", "學生", "類型", "備註"]
+        st.dataframe(show_todo, use_container_width=True, hide_index=True)
 
         st.markdown("### 安排補課")
         todo = todo.copy()
@@ -548,7 +558,7 @@ elif menu == "🔄 補課管理":
         todo_options = {}
         for _, row in todo.sort_values("date_parsed").iterrows():
             d_str = row["date_parsed"].strftime("%Y-%m-%d") if pd.notna(row["date_parsed"]) else str(row.get("date", ""))
-            label = f"[{row['id']}] {d_str} {row.get('start', '')}-{row.get('end', '')} {row.get('學生', '')}"
+            label = f"{d_str} {row.get('start', '')}-{row.get('end', '')} {row.get('學生', '')}"
             todo_options[label] = int(row["id"])
 
         with st.form("makeup"):
@@ -569,7 +579,7 @@ elif menu == "🔄 補課管理":
                 lessons = pd.concat([lessons, new_row], ignore_index=True)
                 lessons.loc[lessons["id"] == lid, "status"] = "已補課"
                 save_data(lessons, "lessons")
-                st.success(f"✅ 補課已建立（新課程 ID = {new_id}）")
+                st.success("✅ 補課已建立")
                 st.rerun()
 
 # ---------- 調課管理 ----------
@@ -594,7 +604,7 @@ elif menu == "🔀 調課管理":
             options = {}
             for _, row in lessons_avail.iterrows():
                 d_str = row["date_parsed"].strftime("%Y-%m-%d")
-                label = f"[{row['id']}] {d_str} {row.get('start', '')}-{row.get('end', '')} {row.get('學生', '')}（{row.get('type', '')}）"
+                label = f"{d_str} {row.get('start', '')}-{row.get('end', '')} {row.get('學生', '')}（{row.get('type', '')}）"
                 options[label] = int(row["id"])
 
             selected = st.selectbox("原課程", list(options.keys()))
@@ -637,7 +647,7 @@ elif menu == "🔀 調課管理":
                     lessons = pd.concat([lessons, new_row], ignore_index=True)
                     save_data(lessons, "lessons")
 
-                    st.success(f"✅ 調課成功！原課程 ID {old_lesson_id} → 已調課；新課程 ID {new_id}")
+                    st.success(f"✅ 調課成功！")
                     st.rerun()
 
 # ---------- 檔案管理 ----------
@@ -655,7 +665,7 @@ elif menu == "📁 檔案管理":
         try:
             service = get_drive_service()
             folder_id = get_student_folder(service, student_row)
-            st.success(f"📁 學生資料夾：S{sid:03d}_{student}")
+            st.success(f"📁 學生資料夾：{student}")
 
             st.markdown("---")
             st.subheader("⬆️ 上傳檔案")
@@ -781,10 +791,9 @@ elif menu == "📋 申請審核":
                 history["學生"] = history["student_id"].apply(
                     lambda x: name_map.get(int(x) if str(x).isdigit() else x, f"學生 {x}")
                 )
-                st.dataframe(
-                    history[["id", "學生", "type", "status", "created_at", "teacher_note"]],
-                    use_container_width=True
-                )
+                show_history = history[["學生", "type", "status", "created_at", "teacher_note"]].copy()
+                show_history.columns = ["學生", "類型", "狀態", "送出時間", "老師備註"]
+                st.dataframe(show_history, use_container_width=True, hide_index=True)
 
 # ---------- 課程排程 ----------
 elif menu == "📅 課程排程":
@@ -843,7 +852,7 @@ elif menu == "📅 課程排程":
         if view.empty:
             st.info("沒有符合的課程")
         else:
-            st.caption("💡 點擊 note 欄位即可編輯，編輯後按下方「💾 儲存變更」")
+            st.caption("💡 點擊「備註」欄位即可編輯，編輯後按下方「💾 儲存變更」")
             edit_cols = ["id", "date", "start", "end", "學生", "type", "status", "note"]
             edit_df = view[edit_cols].copy()
 
@@ -853,7 +862,7 @@ elif menu == "📅 課程排程":
                 hide_index=True,
                 disabled=["id", "date", "start", "end", "學生", "type", "status"],
                 column_config={
-                    "id": st.column_config.NumberColumn("ID", width="small"),
+                    "id": None,
                     "date": st.column_config.TextColumn("日期", width="small"),
                     "start": st.column_config.TextColumn("開始", width="small"),
                     "end": st.column_config.TextColumn("結束", width="small"),
@@ -893,13 +902,13 @@ elif menu == "📅 課程排程":
         else:
             del_options = {}
             for _, row in view.iterrows():
-                label = f"[{row['id']}] {row.get('date', '')} {row.get('start', '')}-{row.get('end', '')} {row.get('學生', '')} ({row.get('type', '')})"
+                label = f"{row.get('date', '')} {row.get('start', '')}-{row.get('end', '')} {row.get('學生', '')} ({row.get('type', '')})"
                 del_options[label] = int(row["id"])
 
             selected_del = st.selectbox("選擇要刪除的課程", list(del_options.keys()))
             del_id = del_options[selected_del]
 
-            st.warning(f"⚠️ 將刪除課程 ID = {del_id}，及其相關的請假申請與進度紀錄")
+            st.warning(f"⚠️ 將刪除該課程及其相關的請假申請與進度紀錄")
             confirm = st.checkbox("我確認要刪除這堂課（無法復原）", key="confirm_del_lesson")
 
             if st.button("🗑️ 確定刪除", disabled=not confirm, type="primary"):
@@ -922,7 +931,7 @@ elif menu == "📅 課程排程":
                     if len(progress_df) != before:
                         save_data(progress_df, "progress")
 
-                st.success(f"✅ 已刪除課程 ID = {del_id}")
+                st.success("✅ 已刪除課程")
                 st.rerun()
 
 # ---------- 週期排課 ----------
@@ -1027,7 +1036,7 @@ elif menu == "📈 時數統計":
         rate_map = students.set_index("name")["hourly_rate"].to_dict()
         summary["預估收入"] = summary.apply(lambda r: r["總時數"] * rate_map.get(r["學生"], 0), axis=1)
         st.metric("總收入", f"NT$ {int(summary['預估收入'].sum()):,}")
-        st.dataframe(summary, use_container_width=True)
+        st.dataframe(summary, use_container_width=True, hide_index=True)
 
         import plotly.express as px
         fig = px.bar(summary, x="學生", y="總時數", title="各學生上課時數")
