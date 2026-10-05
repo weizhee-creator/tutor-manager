@@ -4,6 +4,9 @@ import pandas as pd
 from datetime import datetime, date, timedelta
 import gspread
 from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
+import io
 
 # ---------- 連接 Google Sheets ----------
 @st.cache_resource
@@ -15,6 +18,13 @@ def get_gsheet_client():
     creds_dict = dict(st.secrets["gcp_service_account"])
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     return gspread.authorize(creds)
+
+@st.cache_resource
+def get_drive_service():
+    scopes = ["https://www.googleapis.com/auth/drive"]
+    creds_dict = dict(st.secrets["gcp_service_account"])
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    return build("drive", "v3", credentials=creds)
 
 def get_sheet(name):
     client = get_gsheet_client()
@@ -51,13 +61,61 @@ def parse_date_safe(series):
     return result
 
 def safe_next_id(df, id_col="id"):
-    """安全取得下一個 ID，處理空資料、文字型別"""
     if df is None or df.empty or id_col not in df.columns:
         return 1
     ids = pd.to_numeric(df[id_col], errors="coerce").dropna()
     if ids.empty:
         return 1
     return int(ids.max() + 1)
+
+# ---------- Google Drive 工具 ----------
+def find_or_create_folder(service, name, parent_id=None):
+    """找資料夾，沒有就建立"""
+    query = f"name='{name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+    if parent_id:
+        query += f" and '{parent_id}' in parents"
+    results = service.files().list(q=query, fields="files(id, name)").execute()
+    files = results.get("files", [])
+    if files:
+        return files[0]["id"]
+    # 建立新資料夾
+    metadata = {
+        "name": name,
+        "mimeType": "application/vnd.google-apps.folder",
+    }
+    if parent_id:
+        metadata["parents"] = [parent_id]
+    folder = service.files().create(body=metadata, fields="id").execute()
+    return folder["id"]
+
+def list_files(service, folder_id):
+    """列出資料夾內的所有檔案"""
+    query = f"'{folder_id}' in parents and trashed=false"
+    results = service.files().list(
+        q=query,
+        fields="files(id, name, mimeType, size, createdTime, webViewLink)",
+        orderBy="createdTime desc"
+    ).execute()
+    return results.get("files", [])
+
+def upload_file(service, folder_id, filename, file_bytes, mime_type):
+    """上傳檔案到指定資料夾"""
+    file_metadata = {
+        "name": filename,
+        "parents": [folder_id],
+    }
+    media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype=mime_type, resumable=False)
+    file = service.files().create(body=file_metadata, media_body=media, fields="id").execute()
+    return file["id"]
+
+def delete_file(service, file_id):
+    service.files().delete(fileId=file_id).execute()
+
+def get_student_folder(service, student):
+    """取得該學生的資料夾（沒有就建立）"""
+    root_id = st.secrets["gcp"]["drive_folder_id"]
+    student_folder_name = f"S{student['id']:03d}_{student['name']}"
+    return find_or_create_folder(service, student_folder_name, root_id)
 
 # ---------- 設定 ----------
 st.set_page_config(page_title="家教時間管理", page_icon="📚", layout="wide")
@@ -91,6 +149,7 @@ menu = st.sidebar.radio("功能選單", [
     "🔄 補課管理",
     "📋 申請審核",
     "📊 上課進度",
+    "📁 檔案管理",
     "📈 時數統計",
 ])
 
@@ -115,7 +174,7 @@ if menu == "🏠 首頁總覽":
     col4.metric("待審核", pending_requests)
 
     if pending_requests > 0:
-        st.warning(f"⚠️ 有 {pending_requests} 筆申請待審核，請到「📋 申請審核」處理")
+        st.warning(f"⚠️ 有 {pending_requests} 筆申請待審核")
 
     st.subheader("📌 即將到來的課程")
     if upcoming.empty:
@@ -197,7 +256,7 @@ elif menu == "📅 課程排程":
 # ---------- 週期排課 ----------
 elif menu == "📆 週期排課":
     st.title("📆 週期排課")
-    st.caption("一次產生多堂固定課程，省去一筆一筆新增的麻煩")
+    st.caption("一次產生多堂固定課程")
 
     if students.empty:
         st.warning("請先新增學生")
@@ -268,10 +327,7 @@ elif menu == "📆 週期排課":
 
                     rows = []
                     for d in preview_dates:
-                        rows.append([
-                            next_id, sid, str(d), start.strftime("%H:%M"), end.strftime("%H:%M"),
-                            "正課", "已排定", ""
-                        ])
+                        rows.append([next_id, sid, str(d), start.strftime("%H:%M"), end.strftime("%H:%M"), "正課", "已排定", ""])
                         next_id += 1
 
                     new_rows_df = pd.DataFrame(rows, columns=LESSON_COLS)
@@ -294,7 +350,7 @@ elif menu == "🔄 補課管理":
             if st.button("標記為待補課"):
                 lessons.loc[lessons["id"] == lid, "status"] = "待補課"
                 save_data(lessons, "lessons")
-                st.success("已標記，請安排補課時間")
+                st.success("已標記")
                 st.rerun()
 
     st.subheader("待補課清單")
@@ -408,7 +464,6 @@ elif menu == "📋 申請審核":
 # ---------- 上課進度 ----------
 elif menu == "📊 上課進度":
     st.title("📊 上課進度紀錄")
-    st.caption("每堂課後記錄上課內容與作業")
 
     if students.empty:
         st.warning("請先新增學生")
@@ -504,6 +559,90 @@ elif menu == "📊 上課進度":
                         st.caption(f"💬 {row['note']}")
                     st.caption(f"記錄時間：{row.get('created_at', '')}")
                     st.markdown("---")
+
+# ---------- 檔案管理 ----------
+elif menu == "📁 檔案管理":
+    st.title("📁 檔案管理")
+    st.caption("為每位學生建立專屬資料夾，上傳教材、講義、筆記")
+
+    if students.empty:
+        st.warning("請先新增學生")
+    else:
+        student = st.selectbox("選擇學生", students["name"])
+        sid = int(students[students["name"] == student]["id"].values[0])
+        student_row = students[students["id"] == sid].iloc[0]
+
+        try:
+            service = get_drive_service()
+            folder_id = get_student_folder(service, student_row)
+            st.success(f"📁 學生資料夾：S{sid:03d}_{student}")
+
+            st.markdown("---")
+
+            # 上傳區
+            st.subheader("⬆️ 上傳檔案")
+            uploaded_file = st.file_uploader("選擇檔案", key="teacher_upload")
+
+            col1, col2 = st.columns(2)
+            with col1:
+                subject_folder = st.selectbox("分類", ["教材", "筆記", "作業", "講義", "其他"], key="upload_category")
+            with col2:
+                if uploaded_file is not None:
+                    st.caption(f"檔案大小：{uploaded_file.size / 1024:.1f} KB")
+
+            if uploaded_file is not None:
+                if st.button("📤 上傳", type="primary"):
+                    try:
+                        sub_folder_id = find_or_create_folder(service, subject_folder, folder_id)
+                        upload_file(
+                            service,
+                            sub_folder_id,
+                            uploaded_file.name,
+                            uploaded_file.getvalue(),
+                            uploaded_file.type or "application/octet-stream"
+                        )
+                        st.success(f"✅ 已上傳：{uploaded_file.name}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"上傳失敗：{e}")
+
+            st.markdown("---")
+
+            # 檔案列表
+            st.subheader("📂 已上傳的檔案")
+
+            subfolders = service.files().list(
+                q=f"'{folder_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
+                fields="files(id, name)"
+            ).execute().get("files", [])
+
+            if not subfolders:
+                st.info("尚未建立任何分類資料夾")
+            else:
+                for subfolder in subfolders:
+                    with st.expander(f"📁 {subfolder['name']}", expanded=False):
+                        files = list_files(service, subfolder["id"])
+                        if not files:
+                            st.caption("（空）")
+                        else:
+                            for f in files:
+                                c1, c2, c3 = st.columns([4, 1, 1])
+                                with c1:
+                                    size_kb = int(f.get("size", 0)) / 1024 if f.get("size") else 0
+                                    st.markdown(f"📄 **{f['name']}** （{size_kb:.1f} KB）")
+                                with c2:
+                                    st.markdown(f"[🔗 開啟]({f.get('webViewLink', '#')})")
+                                with c3:
+                                    if st.button("🗑️", key=f"del_{f['id']}"):
+                                        try:
+                                            delete_file(service, f["id"])
+                                            st.success("已刪除")
+                                            st.rerun()
+                                        except Exception as e:
+                                            st.error(f"刪除失敗：{e}")
+        except Exception as e:
+            st.error(f"Drive 連線失敗：{e}")
+            st.info("請確認：1. Drive API 已啟用 2. 資料夾已共用給機器人 3. Secrets 已設定 drive_folder_id")
 
 # ---------- 時數統計 ----------
 elif menu == "📈 時數統計":
