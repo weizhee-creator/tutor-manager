@@ -4,11 +4,12 @@ import pandas as pd
 from datetime import datetime, date, timedelta
 import gspread
 from google.oauth2.service_account import Credentials
+from google.oauth2.credentials import Credentials as OAuthCredentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 import io
 
-# ---------- 連接 Google Sheets ----------
+# ---------- 連接 Google Sheets（用服務帳號） ----------
 @st.cache_resource
 def get_gsheet_client():
     scopes = [
@@ -18,13 +19,6 @@ def get_gsheet_client():
     creds_dict = dict(st.secrets["gcp_service_account"])
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     return gspread.authorize(creds)
-
-@st.cache_resource
-def get_drive_service():
-    scopes = ["https://www.googleapis.com/auth/drive"]
-    creds_dict = dict(st.secrets["gcp_service_account"])
-    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    return build("drive", "v3", credentials=creds)
 
 def get_sheet(name):
     client = get_gsheet_client()
@@ -52,6 +46,24 @@ def save_data(df, sheet_name):
     except Exception as e:
         st.error(f"寫入 {sheet_name} 失敗：{e}")
 
+# ---------- 連接 Google Drive（用 OAuth） ----------
+@st.cache_resource
+def get_drive_service():
+    """用 OAuth refresh_token 取得 Drive 服務"""
+    client_id = st.secrets["oauth"]["client_id"]
+    client_secret = st.secrets["oauth"]["client_secret"]
+    refresh_token = st.secrets["gcp"]["refresh_token"]
+
+    creds = OAuthCredentials(
+        None,
+        refresh_token=refresh_token,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=client_id,
+        client_secret=client_secret,
+        scopes=["https://www.googleapis.com/auth/drive"],
+    )
+    return build("drive", "v3", credentials=creds)
+
 def parse_date_safe(series):
     result = pd.to_datetime(series, errors="coerce", format="%Y-%m-%d")
     mask = result.isna()
@@ -70,7 +82,6 @@ def safe_next_id(df, id_col="id"):
 
 # ---------- Google Drive 工具 ----------
 def find_or_create_folder(service, name, parent_id=None):
-    """找資料夾，沒有就建立"""
     query = f"name='{name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
     if parent_id:
         query += f" and '{parent_id}' in parents"
@@ -78,7 +89,6 @@ def find_or_create_folder(service, name, parent_id=None):
     files = results.get("files", [])
     if files:
         return files[0]["id"]
-    # 建立新資料夾
     metadata = {
         "name": name,
         "mimeType": "application/vnd.google-apps.folder",
@@ -89,7 +99,6 @@ def find_or_create_folder(service, name, parent_id=None):
     return folder["id"]
 
 def list_files(service, folder_id):
-    """列出資料夾內的所有檔案"""
     query = f"'{folder_id}' in parents and trashed=false"
     results = service.files().list(
         q=query,
@@ -99,7 +108,6 @@ def list_files(service, folder_id):
     return results.get("files", [])
 
 def upload_file(service, folder_id, filename, file_bytes, mime_type):
-    """上傳檔案到指定資料夾"""
     file_metadata = {
         "name": filename,
         "parents": [folder_id],
@@ -112,7 +120,6 @@ def delete_file(service, file_id):
     service.files().delete(fileId=file_id).execute()
 
 def get_student_folder(service, student):
-    """取得該學生的資料夾（沒有就建立）"""
     root_id = st.secrets["gcp"]["drive_folder_id"]
     student_folder_name = f"S{student['id']:03d}_{student['name']}"
     return find_or_create_folder(service, student_folder_name, root_id)
@@ -642,7 +649,6 @@ elif menu == "📁 檔案管理":
                                             st.error(f"刪除失敗：{e}")
         except Exception as e:
             st.error(f"Drive 連線失敗：{e}")
-            st.info("請確認：1. Drive API 已啟用 2. 資料夾已共用給機器人 3. Secrets 已設定 drive_folder_id")
 
 # ---------- 時數統計 ----------
 elif menu == "📈 時數統計":
