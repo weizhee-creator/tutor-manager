@@ -12,11 +12,12 @@ import pandas as pd
 from datetime import datetime, date, timedelta
 import gspread
 from google.oauth2.service_account import Credentials
+from google.oauth2.credentials import Credentials as OAuthCredentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 import io
 
-# ---------- 連接 Google Sheets（用服務帳號） ----------
+# ---------- 連接 Google Sheets ----------
 @st.cache_resource
 def get_gsheet_client():
     scopes = [
@@ -32,7 +33,7 @@ def get_sheet(name):
     sheet_id = st.secrets["gcp"]["sheet_id"]
     return client.open_by_key(sheet_id).worksheet(name)
 
-@st.cache_data(ttl=100)
+@st.cache_data(ttl=300)
 def load_data(sheet_name, columns=None):
     try:
         ws = get_sheet(sheet_name)
@@ -53,10 +54,9 @@ def save_data(df, sheet_name):
     except Exception as e:
         st.error(f"寫入 {sheet_name} 失敗：{e}")
 
-# ---------- 連接 Google Drive（用 OAuth） ----------
+# ---------- Google Drive（OAuth） ----------
 @st.cache_resource
 def get_drive_service():
-    """用 OAuth refresh_token 取得 Drive 服務"""
     client_id = st.secrets["oauth"]["client_id"]
     client_secret = st.secrets["oauth"]["client_secret"]
     refresh_token = st.secrets["gcp"]["refresh_token"]
@@ -96,10 +96,7 @@ def find_or_create_folder(service, name, parent_id=None):
     files = results.get("files", [])
     if files:
         return files[0]["id"]
-    metadata = {
-        "name": name,
-        "mimeType": "application/vnd.google-apps.folder",
-    }
+    metadata = {"name": name, "mimeType": "application/vnd.google-apps.folder"}
     if parent_id:
         metadata["parents"] = [parent_id]
     folder = service.files().create(body=metadata, fields="id").execute()
@@ -115,10 +112,7 @@ def list_files(service, folder_id):
     return results.get("files", [])
 
 def upload_file(service, folder_id, filename, file_bytes, mime_type):
-    file_metadata = {
-        "name": filename,
-        "parents": [folder_id],
-    }
+    file_metadata = {"name": filename, "parents": [folder_id]}
     media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype=mime_type, resumable=False)
     file = service.files().create(body=file_metadata, media_body=media, fields="id").execute()
     return file["id"]
@@ -238,34 +232,109 @@ elif menu == "📅 課程排程":
     if students.empty:
         st.warning("請先新增學生")
     else:
-        with st.form("add_lesson"):
-            student = st.selectbox("學生", students["name"])
-            sid = int(students[students["name"] == student]["id"].values[0])
-            d = st.date_input("日期", value=date.today())
-            c1, c2 = st.columns(2)
-            start = c1.time_input("開始時間", value=datetime.strptime("19:00", "%H:%M").time())
-            end = c2.time_input("結束時間", value=datetime.strptime("20:00", "%H:%M").time())
-            ltype = st.selectbox("類型", ["正課", "補課", "試聽"])
-            note = st.text_input("備註")
-            if st.form_submit_button("新增課程"):
-                new_id = safe_next_id(lessons)
-                new_row = pd.DataFrame(
-                    [[new_id, sid, str(d), start.strftime("%H:%M"), end.strftime("%H:%M"), ltype, "已排定", note]],
-                    columns=LESSON_COLS
-                )
-                lessons = pd.concat([lessons, new_row], ignore_index=True)
-                save_data(lessons, "lessons")
-                st.success("課程已新增")
-                st.rerun()
+        # ---------- 新增課程 ----------
+        with st.expander("➕ 新增課程", expanded=False):
+            with st.form("add_lesson"):
+                student = st.selectbox("學生", students["name"])
+                sid = int(students[students["name"] == student]["id"].values[0])
+                d = st.date_input("日期", value=date.today())
+                c1, c2 = st.columns(2)
+                start = c1.time_input("開始時間", value=datetime.strptime("19:00", "%H:%M").time())
+                end = c2.time_input("結束時間", value=datetime.strptime("20:00", "%H:%M").time())
+                ltype = st.selectbox("類型", ["正課", "補課", "試聽"])
+                note = st.text_input("備註")
+                if st.form_submit_button("新增課程"):
+                    new_id = safe_next_id(lessons)
+                    new_row = pd.DataFrame(
+                        [[new_id, sid, str(d), start.strftime("%H:%M"), end.strftime("%H:%M"), ltype, "已排定", note]],
+                        columns=LESSON_COLS
+                    )
+                    lessons = pd.concat([lessons, new_row], ignore_index=True)
+                    save_data(lessons, "lessons")
+                    st.success("課程已新增")
+                    st.rerun()
 
-        st.subheader("所有課程")
-        if lessons.empty:
-            st.info("尚無課程")
+        st.markdown("---")
+
+        # ---------- 所有課程（含篩選） ----------
+        st.subheader("📋 所有課程")
+
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            filter_student = st.selectbox("篩選學生", ["全部"] + list(students["name"]))
+        with col_f2:
+            if not lessons.empty and "date" in lessons.columns:
+                lessons_dates = parse_date_safe(lessons["date"]).dropna()
+                months = sorted(lessons_dates.dt.strftime("%Y-%m").unique(), reverse=True)
+            else:
+                months = []
+            filter_month = st.selectbox("篩選月份", ["全部"] + list(months))
+
+        view = lessons.copy()
+        name_map = students.set_index("id")["name"].to_dict()
+        view["學生"] = view["student_id"].map(name_map)
+
+        if filter_student != "全部":
+            view = view[view["學生"] == filter_student]
+
+        if filter_month != "全部" and not view.empty:
+            view["_date_parsed"] = parse_date_safe(view["date"])
+            view = view[view["_date_parsed"].dt.strftime("%Y-%m") == filter_month]
+            view = view.drop(columns=["_date_parsed"])
+
+        if view.empty:
+            st.info("沒有符合的課程")
         else:
-            view = lessons.copy()
-            name_map = students.set_index("id")["name"].to_dict()
-            view["學生"] = view["student_id"].map(name_map)
             st.dataframe(view[["id", "date", "start", "end", "學生", "type", "status", "note"]], use_container_width=True)
+
+        st.markdown("---")
+
+        # ---------- 刪除課程 ----------
+        st.subheader("🗑️ 刪除課程")
+        st.caption("刪除時會一併刪除相關的請假申請與進度紀錄")
+
+        if view.empty:
+            st.info("沒有課程可刪除")
+        else:
+            del_options = {}
+            for _, row in view.iterrows():
+                label = f"[{row['id']}] {row.get('date', '')} {row.get('start', '')}-{row.get('end', '')} {row.get('學生', '')} ({row.get('type', '')})"
+                del_options[label] = int(row["id"])
+
+            selected_del = st.selectbox("選擇要刪除的課程", list(del_options.keys()))
+            del_id = del_options[selected_del]
+
+            st.warning(f"⚠️ 將刪除課程 ID = {del_id}，及其相關的請假申請與進度紀錄")
+
+            confirm = st.checkbox("我確認要刪除這堂課（無法復原）", key="confirm_del_lesson")
+
+            if st.button("🗑️ 確定刪除", disabled=not confirm, type="primary"):
+                # 1. 刪除課程
+                lessons = lessons[lessons["id"] != del_id]
+                save_data(lessons, "lessons")
+
+                # 2. 刪除相關的 requests（original_lesson_id == del_id）
+                if not requests_df.empty and "original_lesson_id" in requests_df.columns:
+                    before = len(requests_df)
+                    requests_df = requests_df[
+                        pd.to_numeric(requests_df["original_lesson_id"], errors="coerce") != del_id
+                    ]
+                    after = len(requests_df)
+                    if before != after:
+                        save_data(requests_df, "requests")
+
+                # 3. 刪除相關的 progress（lesson_id == del_id）
+                if not progress_df.empty and "lesson_id" in progress_df.columns:
+                    before = len(progress_df)
+                    progress_df = progress_df[
+                        pd.to_numeric(progress_df["lesson_id"], errors="coerce") != del_id
+                    ]
+                    after = len(progress_df)
+                    if before != after:
+                        save_data(progress_df, "progress")
+
+                st.success(f"✅ 已刪除課程 ID = {del_id}")
+                st.rerun()
 
 # ---------- 週期排課 ----------
 elif menu == "📆 週期排課":
@@ -276,11 +345,9 @@ elif menu == "📆 週期排課":
         st.warning("請先新增學生")
     else:
         col1, col2 = st.columns(2)
-
         with col1:
             student = st.selectbox("選擇學生", students["name"])
             sid = int(students[students["name"] == student]["id"].values[0])
-
             st.markdown("**上課星期（可多選）**")
             weekdays_cn = ["一", "二", "三", "四", "五", "六", "日"]
             selected_weekdays = []
@@ -295,18 +362,15 @@ elif menu == "📆 週期排課":
             c1, c2 = st.columns(2)
             start = c1.time_input("開始", value=datetime.strptime("19:00", "%H:%M").time(), key="period_start")
             end = c2.time_input("結束", value=datetime.strptime("20:00", "%H:%M").time(), key="period_end")
-
             st.markdown("**產生範圍**")
             quick = st.radio("快速選", ["1 個月", "2 個月", "自訂"], horizontal=True)
             today = date.today()
             if quick == "1 個月":
-                default_end = today + timedelta(days=30)
                 start_date = st.date_input("從", value=today)
-                end_date = st.date_input("到", value=default_end)
+                end_date = st.date_input("到", value=today + timedelta(days=30))
             elif quick == "2 個月":
-                default_end = today + timedelta(days=60)
                 start_date = st.date_input("從", value=today)
-                end_date = st.date_input("到", value=default_end)
+                end_date = st.date_input("到", value=today + timedelta(days=60))
             else:
                 start_date = st.date_input("從", value=today)
                 end_date = st.date_input("到", value=today + timedelta(days=30))
@@ -338,12 +402,10 @@ elif menu == "📆 週期排課":
                 if st.button("✅ 批次建立", type="primary"):
                     new_lessons = lessons.copy() if not lessons.empty else pd.DataFrame(columns=LESSON_COLS)
                     next_id = safe_next_id(new_lessons)
-
                     rows = []
                     for d in preview_dates:
                         rows.append([next_id, sid, str(d), start.strftime("%H:%M"), end.strftime("%H:%M"), "正課", "已排定", ""])
                         next_id += 1
-
                     new_rows_df = pd.DataFrame(rows, columns=LESSON_COLS)
                     new_lessons = pd.concat([new_lessons, new_rows_df], ignore_index=True)
                     save_data(new_lessons, "lessons")
@@ -405,7 +467,6 @@ elif menu == "📋 申請審核":
         st.info("目前沒有申請")
     else:
         pending = requests_df[requests_df["status"] == "待處理"]
-
         if pending.empty:
             st.success("🎉 沒有待處理的申請")
 
@@ -421,18 +482,15 @@ elif menu == "📋 申請審核":
 
             with st.container():
                 st.markdown(f"### 📝 {row['type']} — {student_name}")
-
                 col1, col2 = st.columns([2, 1])
                 with col1:
                     st.markdown(f"**原因：** {row.get('reason', '（無）')}")
                     st.markdown(f"**送出時間：** {row.get('created_at', '')}")
-
                     if row["type"] == "請假":
                         orig_id = row.get("original_lesson_id")
                         if str(orig_id).isdigit() and int(orig_id) in lesson_map:
                             orig = lesson_map[int(orig_id)]
                             st.info(f"📅 原課程：{orig.get('date')} {orig.get('start')}-{orig.get('end')}（{orig.get('type')}）")
-
                 with col2:
                     teacher_note = st.text_input("老師備註", key=f"note_{req_id}")
 
@@ -441,13 +499,11 @@ elif menu == "📋 申請審核":
                     if st.button("✅ 同意", key=f"approve_{req_id}", use_container_width=True):
                         requests_df.loc[requests_df["id"] == req_id, "status"] = "已同意"
                         requests_df.loc[requests_df["id"] == req_id, "teacher_note"] = teacher_note
-
                         if row["type"] == "請假":
                             orig_id = row.get("original_lesson_id")
                             if str(orig_id).isdigit():
                                 lessons.loc[lessons["id"] == int(orig_id), "status"] = "待補課"
                                 save_data(lessons, "lessons")
-
                         save_data(requests_df, "requests")
                         st.success("已同意")
                         st.rerun()
@@ -494,7 +550,6 @@ elif menu == "📊 上課進度":
         else:
             my_lessons["date_parsed"] = parse_date_safe(my_lessons["date"])
             my_lessons = my_lessons.sort_values("date_parsed", ascending=False)
-
             today = pd.Timestamp(date.today())
             recordable = my_lessons[my_lessons["date_parsed"] <= today]
 
@@ -509,7 +564,6 @@ elif menu == "📊 上課進度":
 
                 selected_label = st.selectbox("選擇課程", list(options.keys()))
                 lesson_id = options[selected_label]
-
                 existing = progress_df[progress_df["lesson_id"].astype(str) == str(lesson_id)] if not progress_df.empty else pd.DataFrame()
 
                 if not existing.empty:
@@ -534,7 +588,6 @@ elif menu == "📊 上課進度":
                         else:
                             lesson_row = recordable[recordable["id"] == lesson_id].iloc[0]
                             d_str = lesson_row["date_parsed"].strftime("%Y-%m-%d") if pd.notna(lesson_row["date_parsed"]) else str(lesson_row["date"])
-
                             if not existing.empty:
                                 progress_df.loc[progress_df["lesson_id"].astype(str) == str(lesson_id), "content"] = content
                                 progress_df.loc[progress_df["lesson_id"].astype(str) == str(lesson_id), "homework"] = homework
@@ -546,7 +599,6 @@ elif menu == "📊 上課進度":
                                     datetime.now().strftime("%Y-%m-%d %H:%M")
                                 ]], columns=PROG_COLS)
                                 progress_df = pd.concat([progress_df, new_row], ignore_index=True)
-
                             save_data(progress_df, "progress")
                             st.success("✅ 進度已儲存")
                             st.rerun()
@@ -561,7 +613,6 @@ elif menu == "📊 上課進度":
             my_progress = my_progress.copy()
             my_progress["date_parsed"] = parse_date_safe(my_progress["date"])
             my_progress = my_progress.sort_values("date_parsed", ascending=False)
-
             for _, row in my_progress.iterrows():
                 with st.container():
                     st.markdown(f"### 📅 {row.get('date', '')}")
@@ -592,11 +643,8 @@ elif menu == "📁 檔案管理":
             st.success(f"📁 學生資料夾：S{sid:03d}_{student}")
 
             st.markdown("---")
-
-            # 上傳區
             st.subheader("⬆️ 上傳檔案")
             uploaded_file = st.file_uploader("選擇檔案", key="teacher_upload")
-
             col1, col2 = st.columns(2)
             with col1:
                 subject_folder = st.selectbox("分類", ["教材", "筆記", "作業", "講義", "其他"], key="upload_category")
@@ -608,21 +656,15 @@ elif menu == "📁 檔案管理":
                 if st.button("📤 上傳", type="primary"):
                     try:
                         sub_folder_id = find_or_create_folder(service, subject_folder, folder_id)
-                        upload_file(
-                            service,
-                            sub_folder_id,
-                            uploaded_file.name,
-                            uploaded_file.getvalue(),
-                            uploaded_file.type or "application/octet-stream"
-                        )
+                        upload_file(service, sub_folder_id, uploaded_file.name,
+                                    uploaded_file.getvalue(),
+                                    uploaded_file.type or "application/octet-stream")
                         st.success(f"✅ 已上傳：{uploaded_file.name}")
                         st.rerun()
                     except Exception as e:
                         st.error(f"上傳失敗：{e}")
 
             st.markdown("---")
-
-            # 檔案列表
             st.subheader("📂 已上傳的檔案")
 
             subfolders = service.files().list(
@@ -676,16 +718,4 @@ elif menu == "📈 時數統計":
         months = sorted(df["date"].dt.strftime("%Y-%m").dropna().unique(), reverse=True)
         month = st.selectbox("選擇月份", ["全部"] + list(months))
         if month != "全部":
-            df = df[df["date"].dt.strftime("%Y-%m") == month]
-
-        summary = df.groupby("學生")["hours"].sum().reset_index()
-        summary.columns = ["學生", "總時數"]
-
-        rate_map = students.set_index("name")["hourly_rate"].to_dict()
-        summary["預估收入"] = summary.apply(lambda r: r["總時數"] * rate_map.get(r["學生"], 0), axis=1)
-        st.metric("總收入", f"NT$ {int(summary['預估收入'].sum()):,}")
-        st.dataframe(summary, use_container_width=True)
-
-        import plotly.express as px
-        fig = px.bar(summary, x="學生", y="總時數", title="各學生上課時數")
-        st.plotly_chart(fig, use_container_width=True)
+            df = df[df["
