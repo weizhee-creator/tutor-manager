@@ -309,28 +309,23 @@ elif menu == "📅 課程排程":
             confirm = st.checkbox("我確認要刪除這堂課（無法復原）", key="confirm_del_lesson")
 
             if st.button("🗑️ 確定刪除", disabled=not confirm, type="primary"):
-                # 1. 刪除課程
                 lessons = lessons[lessons["id"] != del_id]
                 save_data(lessons, "lessons")
 
-                # 2. 刪除相關的 requests（original_lesson_id == del_id）
                 if not requests_df.empty and "original_lesson_id" in requests_df.columns:
                     before = len(requests_df)
                     requests_df = requests_df[
                         pd.to_numeric(requests_df["original_lesson_id"], errors="coerce") != del_id
                     ]
-                    after = len(requests_df)
-                    if before != after:
+                    if len(requests_df) != before:
                         save_data(requests_df, "requests")
 
-                # 3. 刪除相關的 progress（lesson_id == del_id）
                 if not progress_df.empty and "lesson_id" in progress_df.columns:
                     before = len(progress_df)
                     progress_df = progress_df[
                         pd.to_numeric(progress_df["lesson_id"], errors="coerce") != del_id
                     ]
-                    after = len(progress_df)
-                    if before != after:
+                    if len(progress_df) != before:
                         save_data(progress_df, "progress")
 
                 st.success(f"✅ 已刪除課程 ID = {del_id}")
@@ -420,14 +415,30 @@ elif menu == "🔄 補課管理":
     if lessons.empty:
         st.info("尚無課程可操作")
     else:
-        pending = lessons[lessons["status"] == "已排定"]
+        pending = lessons[lessons["status"] == "已排定"].copy()
         if not pending.empty:
-            lid = st.selectbox("選擇要請假的課程", pending["id"])
+            name_map = students.set_index("id")["name"].to_dict() if not students.empty else {}
+            pending["學生"] = pending["student_id"].map(name_map)
+            pending["date_parsed"] = parse_date_safe(pending["date"])
+
+            pending_options = {}
+            for _, row in pending.sort_values("date_parsed").iterrows():
+                d_str = row["date_parsed"].strftime("%Y-%m-%d") if pd.notna(row["date_parsed"]) else str(row.get("date", ""))
+                label = f"[{row['id']}] {d_str} {row.get('start', '')}-{row.get('end', '')} {row.get('學生', '')}（{row.get('type', '')}）"
+                pending_options[label] = int(row["id"])
+
+            selected = st.selectbox("選擇要請假的課程", list(pending_options.keys()))
+            lid = pending_options[selected]
+
             if st.button("標記為待補課"):
                 lessons.loc[lessons["id"] == lid, "status"] = "待補課"
                 save_data(lessons, "lessons")
-                st.success("已標記")
+                st.success(f"✅ 已標記課程 ID = {lid} 為待補課")
                 st.rerun()
+        else:
+            st.info("目前沒有已排定的課程")
+
+    st.markdown("---")
 
     st.subheader("待補課清單")
     todo = lessons[lessons["status"] == "待補課"]
@@ -435,17 +446,29 @@ elif menu == "🔄 補課管理":
         st.success("沒有待補課項目 🎉")
     else:
         todo_view = todo.copy()
-        name_map = students.set_index("id")["name"].to_dict()
+        name_map = students.set_index("id")["name"].to_dict() if not students.empty else {}
         todo_view["學生"] = todo_view["student_id"].map(name_map)
-        st.dataframe(todo_view[["id", "date", "start", "end", "學生", "note"]], use_container_width=True)
+        st.dataframe(todo_view[["id", "date", "start", "end", "學生", "type", "note"]], use_container_width=True)
 
         st.markdown("### 安排補課")
+
+        todo = todo.copy()
+        todo["date_parsed"] = parse_date_safe(todo["date"])
+        todo_options = {}
+        for _, row in todo.sort_values("date_parsed").iterrows():
+            d_str = row["date_parsed"].strftime("%Y-%m-%d") if pd.notna(row["date_parsed"]) else str(row.get("date", ""))
+            label = f"[{row['id']}] {d_str} {row.get('start', '')}-{row.get('end', '')} {row.get('學生', '')}"
+            todo_options[label] = int(row["id"])
+
         with st.form("makeup"):
-            lid = st.selectbox("補課課程 ID", todo["id"])
+            selected_todo = st.selectbox("選擇要補的課程", list(todo_options.keys()))
+            lid = todo_options[selected_todo]
+
             new_date = st.date_input("補課日期")
             c1, c2 = st.columns(2)
             ns = c1.time_input("開始", value=datetime.strptime("19:00", "%H:%M").time())
             ne = c2.time_input("結束", value=datetime.strptime("20:00", "%H:%M").time())
+
             if st.form_submit_button("建立補課"):
                 sid = int(lessons[lessons["id"] == lid]["student_id"].values[0])
                 new_id = safe_next_id(lessons)
@@ -456,7 +479,7 @@ elif menu == "🔄 補課管理":
                 lessons = pd.concat([lessons, new_row], ignore_index=True)
                 lessons.loc[lessons["id"] == lid, "status"] = "已補課"
                 save_data(lessons, "lessons")
-                st.success("補課已建立")
+                st.success(f"✅ 補課已建立（新課程 ID = {new_id}）")
                 st.rerun()
 
 # ---------- 申請審核 ----------
