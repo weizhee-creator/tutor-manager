@@ -50,6 +50,15 @@ def parse_date_safe(series):
         result.loc[mask] = result2
     return result
 
+def safe_next_id(df, id_col="id"):
+    """安全取得下一個 ID，處理空資料、文字型別"""
+    if df is None or df.empty or id_col not in df.columns:
+        return 1
+    ids = pd.to_numeric(df[id_col], errors="coerce").dropna()
+    if ids.empty:
+        return 1
+    return int(ids.max() + 1)
+
 # ---------- 設定 ----------
 st.set_page_config(page_title="家教時間管理", page_icon="📚", layout="wide")
 
@@ -131,7 +140,7 @@ elif menu == "👤 學生管理":
                 if name.strip() == "":
                     st.warning("姓名不能為空")
                 else:
-                    new_id = int(students["id"].max() + 1) if not students.empty else 1
+                    new_id = safe_next_id(students)
                     new_row = pd.DataFrame([[new_id, name, subject, rate, note]], columns=STUDENT_COLS)
                     students = pd.concat([students, new_row], ignore_index=True)
                     save_data(students, "students")
@@ -166,7 +175,7 @@ elif menu == "📅 課程排程":
             ltype = st.selectbox("類型", ["正課", "補課", "試聽"])
             note = st.text_input("備註")
             if st.form_submit_button("新增課程"):
-                new_id = int(lessons["id"].max() + 1) if not lessons.empty else 1
+                new_id = safe_next_id(lessons)
                 new_row = pd.DataFrame(
                     [[new_id, sid, str(d), start.strftime("%H:%M"), end.strftime("%H:%M"), ltype, "已排定", note]],
                     columns=LESSON_COLS
@@ -255,7 +264,7 @@ elif menu == "📆 週期排課":
 
                 if st.button("✅ 批次建立", type="primary"):
                     new_lessons = lessons.copy() if not lessons.empty else pd.DataFrame(columns=LESSON_COLS)
-                    next_id = int(new_lessons["id"].max() + 1) if not new_lessons.empty else 1
+                    next_id = safe_next_id(new_lessons)
 
                     rows = []
                     for d in preview_dates:
@@ -307,7 +316,7 @@ elif menu == "🔄 補課管理":
             ne = c2.time_input("結束", value=datetime.strptime("20:00", "%H:%M").time())
             if st.form_submit_button("建立補課"):
                 sid = int(lessons[lessons["id"] == lid]["student_id"].values[0])
-                new_id = int(lessons["id"].max() + 1)
+                new_id = safe_next_id(lessons)
                 new_row = pd.DataFrame(
                     [[new_id, sid, str(new_date), ns.strftime("%H:%M"), ne.strftime("%H:%M"), "補課", "已排定", f"補原課程 {lid}"]],
                     columns=LESSON_COLS
@@ -409,7 +418,6 @@ elif menu == "📊 上課進度":
             student = st.selectbox("選擇學生", students["name"])
             sid = int(students[students["name"] == student]["id"].values[0])
 
-        # 該學生的課程
         my_lessons = lessons[lessons["student_id"] == sid].copy() if not lessons.empty else pd.DataFrame()
 
         if my_lessons.empty:
@@ -418,7 +426,6 @@ elif menu == "📊 上課進度":
             my_lessons["date_parsed"] = parse_date_safe(my_lessons["date"])
             my_lessons = my_lessons.sort_values("date_parsed", ascending=False)
 
-            # 今天以前的課程（可以記錄進度）
             today = pd.Timestamp(date.today())
             recordable = my_lessons[my_lessons["date_parsed"] <= today]
 
@@ -434,7 +441,6 @@ elif menu == "📊 上課進度":
                 selected_label = st.selectbox("選擇課程", list(options.keys()))
                 lesson_id = options[selected_label]
 
-                # 檢查是否已有紀錄
                 existing = progress_df[progress_df["lesson_id"].astype(str) == str(lesson_id)] if not progress_df.empty else pd.DataFrame()
 
                 if not existing.empty:
@@ -461,13 +467,11 @@ elif menu == "📊 上課進度":
                             d_str = lesson_row["date_parsed"].strftime("%Y-%m-%d") if pd.notna(lesson_row["date_parsed"]) else str(lesson_row["date"])
 
                             if not existing.empty:
-                                # 更新
                                 progress_df.loc[progress_df["lesson_id"].astype(str) == str(lesson_id), "content"] = content
                                 progress_df.loc[progress_df["lesson_id"].astype(str) == str(lesson_id), "homework"] = homework
                                 progress_df.loc[progress_df["lesson_id"].astype(str) == str(lesson_id), "note"] = note
                             else:
-                                # 新增
-                                new_id = int(progress_df["id"].max() + 1) if not progress_df.empty and "id" in progress_df.columns else 1
+                                new_id = safe_next_id(progress_df)
                                 new_row = pd.DataFrame([[
                                     new_id, sid, lesson_id, d_str, content, homework, note,
                                     datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -533,4 +537,3 @@ elif menu == "📈 時數統計":
         import plotly.express as px
         fig = px.bar(summary, x="學生", y="總時數", title="各學生上課時數")
         st.plotly_chart(fig, use_container_width=True)
-        
