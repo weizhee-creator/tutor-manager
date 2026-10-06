@@ -585,14 +585,22 @@ elif menu == "🔄 補課管理":
                 st.success("✅ 補課已建立")
                 st.rerun()
 
-        # ---------- 取消待補課標記 ----------
+        
+# ---------- 取消待補課標記 ----------
         st.markdown("---")
         st.subheader("↩️ 取消待補課標記")
         st.caption("將課程恢復為「已排定」")
 
+        # 建立含學生名字的下拉選單
+        cancel_options = {}
+        for _, row in todo.sort_values("date_parsed").iterrows():
+            d_str = row["date_parsed"].strftime("%Y-%m-%d") if pd.notna(row["date_parsed"]) else str(row.get("date", ""))
+            label = f"{d_str} {row.get('start', '')}-{row.get('end', '')} {row.get('學生', '')}（{row.get('type', '')}）"
+            cancel_options[label] = int(row["id"])
+
         with st.form("cancel_todo"):
-            selected_cancel = st.selectbox("選擇要取消標記的課程", list(todo_options.keys()), key="cancel_todo_select")
-            cancel_lid = todo_options[selected_cancel]
+            selected_cancel = st.selectbox("選擇要取消標記的課程", list(cancel_options.keys()), key="cancel_todo_select")
+            cancel_lid = cancel_options[selected_cancel]
 
             if st.form_submit_button("↩️ 取消待補課", type="primary"):
                 lessons.loc[lessons["id"] == cancel_lid, "status"] = "已排定"
