@@ -700,7 +700,7 @@ elif menu == "📁 檔案管理":
 
             st.markdown("---")
 
-            # ---------- 上傳檔案 ----------
+                      # ---------- 上傳檔案 ----------
             st.subheader("⬆️ 上傳檔案")
 
             # 取得所有子資料夾
@@ -717,92 +717,54 @@ elif menu == "📁 檔案管理":
                 selected_folder_name = st.selectbox("選擇要上傳到的資料夾", list(folder_options.keys()), key="upload_folder_select")
                 selected_folder_id = folder_options[selected_folder_name]
 
-                uploaded_file = st.file_uploader("選擇檔案", key="teacher_upload")
+                # ✅ 支援多檔上傳
+                uploaded_files = st.file_uploader(
+                    "選擇檔案（可一次選多個）",
+                    accept_multiple_files=True,
+                    key="teacher_upload"
+                )
 
-                if uploaded_file is not None:
-                    st.caption(f"檔案大小：{uploaded_file.size / 1024:.1f} KB")
-                    if st.button("📤 上傳", type="primary"):
-                        try:
-                            upload_file(
-                                service,
-                                selected_folder_id,
-                                uploaded_file.name,
-                                uploaded_file.getvalue(),
-                                uploaded_file.type or "application/octet-stream"
-                            )
-                            st.success(f"✅ 已上傳：{uploaded_file.name}")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"上傳失敗：{e}")
+                if uploaded_files:
+                    st.caption(f"已選擇 {len(uploaded_files)} 個檔案：")
+                    for uf in uploaded_files:
+                        st.caption(f"　📄 {uf.name}（{uf.size / 1024:.1f} KB）")
 
-            st.markdown("---")
+                    if st.button("📤 全部上傳", type="primary"):
+                        success_count = 0
+                        fail_count = 0
+                        fail_files = []
 
-            # ---------- 資料夾與檔案列表 ----------
-            st.subheader("📂 資料夾與檔案")
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
 
-            if not subfolders:
-                st.info("尚未建立任何資料夾")
-            else:
-                for subfolder in subfolders:
-                    files = list_files(service, subfolder["id"])
-                    file_count = len(files)
+                        for i, uf in enumerate(uploaded_files):
+                            status_text.text(f"上傳中... ({i+1}/{len(uploaded_files)}) {uf.name}")
+                            try:
+                                upload_file(
+                                    service,
+                                    selected_folder_id,
+                                    uf.name,
+                                    uf.getvalue(),
+                                    uf.type or "application/octet-stream"
+                                )
+                                success_count += 1
+                            except Exception as e:
+                                fail_count += 1
+                                fail_files.append(f"{uf.name}: {e}")
 
-                    with st.expander(f"📁 {subfolder['name']}（{file_count} 個檔案）", expanded=False):
-                        # 刪除資料夾按鈕
-                        col_del1, col_del2 = st.columns([3, 1])
-                        with col_del2:
-                            if st.button("🗑️ 刪除資料夾", key=f"del_folder_{subfolder['id']}"):
-                                st.session_state[f"confirm_del_folder_{subfolder['id']}"] = True
+                            progress_bar.progress((i + 1) / len(uploaded_files))
 
-                        # 確認刪除
-                        if st.session_state.get(f"confirm_del_folder_{subfolder['id']}", False):
-                            st.warning(f"⚠️ 確定要刪除「{subfolder['name']}」嗎？裡面 {file_count} 個檔案也會一起刪除（無法復原）")
-                            col_c1, col_c2 = st.columns(2)
-                            with col_c1:
-                                if st.button("✅ 確定刪除", key=f"real_del_folder_{subfolder['id']}", type="primary"):
-                                    try:
-                                        # 先刪除資料夾內所有檔案
-                                        for f in files:
-                                            try:
-                                                delete_file(service, f["id"])
-                                            except:
-                                                pass
-                                        # 再刪除資料夾
-                                        service.files().delete(fileId=subfolder["id"]).execute()
-                                        st.success(f"✅ 已刪除資料夾「{subfolder['name']}」")
-                                        st.session_state[f"confirm_del_folder_{subfolder['id']}"] = False
-                                        st.rerun()
-                                    except Exception as e:
-                                        st.error(f"刪除失敗：{e}")
-                            with col_c2:
-                                if st.button("❌ 取消", key=f"cancel_del_folder_{subfolder['id']}"):
-                                    st.session_state[f"confirm_del_folder_{subfolder['id']}"] = False
-                                    st.rerun()
+                        status_text.empty()
+                        progress_bar.empty()
 
-                        st.markdown("---")
+                        if success_count > 0:
+                            st.success(f"✅ 成功上傳 {success_count} 個檔案")
+                        if fail_count > 0:
+                            st.error(f"❌ {fail_count} 個檔案失敗")
+                            for ff in fail_files:
+                                st.caption(f"　{ff}")
 
-                        # 檔案列表
-                        if not files:
-                            st.caption("（此資料夾為空）")
-                        else:
-                            for f in files:
-                                c1, c2, c3 = st.columns([4, 1, 1])
-                                with c1:
-                                    size_kb = int(f.get("size", 0)) / 1024 if f.get("size") else 0
-                                    st.markdown(f"📄 **{f['name']}** （{size_kb:.1f} KB）")
-                                with c2:
-                                    st.markdown(f"[🔗 開啟]({f.get('webViewLink', '#')})")
-                                with c3:
-                                    if st.button("🗑️", key=f"del_file_{f['id']}"):
-                                        try:
-                                            delete_file(service, f["id"])
-                                            st.success("已刪除")
-                                            st.rerun()
-                                        except Exception as e:
-                                            st.error(f"刪除失敗：{e}")
-
-        except Exception as e:
-            st.error(f"Drive 連線失敗：{e}")
+                        st.rerun()
 
 # ---------- 申請審核 ----------
 elif menu == "📋 申請審核":
