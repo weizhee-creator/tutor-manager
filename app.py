@@ -509,7 +509,6 @@ elif menu == "👤 學生管理":
             st.rerun()
 
 # ---------- 補課管理 ----------
-
 elif menu == "🔄 補課管理":
     st.title("🔄 補課管理")
 
@@ -524,9 +523,9 @@ elif menu == "🔄 補課管理":
             pending["date_parsed"] = parse_date_safe(pending["date"])
 
             pending_options = {}
-            for _, row in pending.sort_values("date_parsed").iterrows():
+            for idx, (_, row) in enumerate(pending.sort_values("date_parsed").iterrows(), start=1):
                 d_str = row["date_parsed"].strftime("%Y-%m-%d") if pd.notna(row["date_parsed"]) else str(row.get("date", ""))
-                label = f"{d_str} {row.get('start', '')}-{row.get('end', '')} {row.get('學生', '')}（{row.get('type', '')}）"
+                label = f"{d_str} {row.get('start', '')}-{row.get('end', '')} {row.get('學生', '')}（{row.get('type', '')}）#{idx}"
                 pending_options[label] = int(row["id"])
 
             selected = st.selectbox("選擇要請假的課程", list(pending_options.keys()))
@@ -544,25 +543,29 @@ elif menu == "🔄 補課管理":
 
     # ---------- 待補課清單 ----------
     st.subheader("待補課清單")
-    todo = lessons[lessons["status"] == "待補課"]
+    todo = lessons[lessons["status"] == "待補課"].copy()
+
     if todo.empty:
         st.success("沒有待補課項目 🎉")
     else:
-        todo_view = todo.copy()
         name_map = students.set_index("id")["name"].to_dict() if not students.empty else {}
-        todo_view["學生"] = todo_view["student_id"].map(name_map)
-        show_todo = todo_view[["date", "start", "end", "學生", "type", "note"]].copy()
+        todo["學生"] = todo["student_id"].map(name_map)
+        todo["date_parsed"] = parse_date_safe(todo["date"])
+        todo = todo.sort_values("date_parsed")
+
+        show_todo = todo[["date", "start", "end", "學生", "type", "note"]].copy()
         show_todo.columns = ["日期", "開始", "結束", "學生", "類型", "備註"]
         st.dataframe(show_todo, use_container_width=True, hide_index=True)
 
-        st.markdown("### 安排補課")
-        todo = todo.copy()
-        todo["date_parsed"] = parse_date_safe(todo["date"])
+        # 建立下拉選單選項（含學生名字 + 序號）
         todo_options = {}
-        for _, row in todo.sort_values("date_parsed").iterrows():
+        for idx, (_, row) in enumerate(todo.iterrows(), start=1):
             d_str = row["date_parsed"].strftime("%Y-%m-%d") if pd.notna(row["date_parsed"]) else str(row.get("date", ""))
-            label = f"{d_str} {row.get('start', '')}-{row.get('end', '')} {row.get('學生', '')}"
+            label = f"{d_str} {row.get('start', '')}-{row.get('end', '')} {row.get('學生', '')}（{row.get('type', '')}）#{idx}"
             todo_options[label] = int(row["id"])
+
+        st.markdown("---")
+        st.markdown("### 安排補課")
 
         with st.form("makeup"):
             selected_todo = st.selectbox("選擇要補的課程", list(todo_options.keys()))
@@ -585,22 +588,14 @@ elif menu == "🔄 補課管理":
                 st.success("✅ 補課已建立")
                 st.rerun()
 
-        
-# ---------- 取消待補課標記 ----------
+        # ---------- 取消待補課標記 ----------
         st.markdown("---")
-        st.subheader("↩️ 取消待補課標記")
+        st.markdown("### ↩️ 取消待補課標記")
         st.caption("將課程恢復為「已排定」")
 
-        # 建立含學生名字的下拉選單
-        cancel_options = {}
-        for _, row in todo.sort_values("date_parsed").iterrows():
-            d_str = row["date_parsed"].strftime("%Y-%m-%d") if pd.notna(row["date_parsed"]) else str(row.get("date", ""))
-            label = f"{d_str} {row.get('start', '')}-{row.get('end', '')} {row.get('學生', '')}（{row.get('type', '')}）"
-            cancel_options[label] = int(row["id"])
-
         with st.form("cancel_todo"):
-            selected_cancel = st.selectbox("選擇要取消標記的課程", list(cancel_options.keys()), key="cancel_todo_select")
-            cancel_lid = cancel_options[selected_cancel]
+            selected_cancel = st.selectbox("選擇要取消標記的課程", list(todo_options.keys()), key="cancel_todo_select")
+            cancel_lid = todo_options[selected_cancel]
 
             if st.form_submit_button("↩️ 取消待補課", type="primary"):
                 lessons.loc[lessons["id"] == cancel_lid, "status"] = "已排定"
