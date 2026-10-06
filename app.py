@@ -18,6 +18,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 import io
 import calendar
+import hashlib
 
 # ---------- 連接 Google Sheets ----------
 @st.cache_resource
@@ -88,6 +89,9 @@ def safe_next_id(df, id_col="id"):
     if ids.empty:
         return 1
     return int(ids.max() + 1)
+
+def hash_password(password, salt):
+    return hashlib.sha256((password + salt).encode()).hexdigest()
 
 # ---------- 學生顏色 ----------
 STUDENT_COLORS = [
@@ -509,6 +513,57 @@ elif menu == "👤 學生管理":
             st.success("已刪除")
             st.rerun()
 
+        # ---------- 重設學生密碼 ----------
+        st.markdown("---")
+        st.subheader("🔑 重設學生密碼")
+        st.caption("將學生的密碼重設為預設密碼 tutor2026，並要求下次登入時更改")
+
+        reset_options = {f"{row['name']}（{row.get('subject', '')}）": int(row["id"]) for _, row in students.iterrows()}
+        selected_reset = st.selectbox("選擇要重設密碼的學生", list(reset_options.keys()), key="reset_pw_select")
+        reset_sid = reset_options[selected_reset]
+
+        student_row = students[students["id"] == reset_sid].iloc[0]
+        student_name = student_row["name"]
+        student_username = f"S{reset_sid:03d}"
+
+        if st.button("🔑 重設為預設密碼", type="primary"):
+            if accounts.empty:
+                st.error("找不到 accounts 分頁")
+            else:
+                user_rows = accounts[accounts["student_id"].astype(str) == str(reset_sid)]
+
+                if user_rows.empty:
+                    st.warning(f"⚠️ 找不到 {student_name} 的帳號，請先建立")
+                else:
+                    new_salt = os.urandom(16).hex()
+                    new_hash = hash_password("tutor2026", new_salt)
+
+                    accounts.loc[accounts["student_id"].astype(str) == str(reset_sid), "salt"] = new_salt
+                    accounts.loc[accounts["student_id"].astype(str) == str(reset_sid), "password_hash"] = new_hash
+                    accounts.loc[accounts["student_id"].astype(str) == str(reset_sid), "must_change_pw"] = "TRUE"
+
+                    save_data(accounts, "accounts")
+
+                    st.success(f"✅ 已重設 {student_name} 的密碼")
+                    st.info(f"""
+**學生帳號資訊**
+- 學號：`{student_username}`
+- 姓名：{student_name}
+- 新密碼：`tutor2026`
+- 下次登入會要求更改密碼
+
+**複製以下訊息給學生：**
+
+📚 WeiZhe 家教學習平台
+
+網址：https://weizhetutor.streamlit.app
+學號：{student_username}
+密碼：tutor2026
+
+⚠️ 第一次登入後請自行更改密碼。
+                    """)
+                    st.rerun()
+
 # ---------- 補課管理 ----------
 elif menu == "🔄 補課管理":
     st.title("🔄 補課管理")
@@ -542,7 +597,6 @@ elif menu == "🔄 補課管理":
 
     st.markdown("---")
 
-    # ---------- 待補課清單 ----------
     st.subheader("待補課清單")
     todo = lessons[lessons["status"] == "待補課"].copy()
 
@@ -558,7 +612,6 @@ elif menu == "🔄 補課管理":
         show_todo.columns = ["日期", "開始", "結束", "學生", "類型", "備註"]
         st.dataframe(show_todo, use_container_width=True, hide_index=True)
 
-        # 建立下拉選單選項（含學生名字 + 序號）
         todo_options = {}
         for idx, (_, row) in enumerate(todo.iterrows(), start=1):
             d_str = row["date_parsed"].strftime("%Y-%m-%d") if pd.notna(row["date_parsed"]) else str(row.get("date", ""))
@@ -589,7 +642,6 @@ elif menu == "🔄 補課管理":
                 st.success("✅ 補課已建立")
                 st.rerun()
 
-        # ---------- 取消待補課標記 ----------
         st.markdown("---")
         st.markdown("### ↩️ 取消待補課標記")
         st.caption("將課程恢復為「已排定」")
@@ -624,9 +676,9 @@ elif menu == "🔀 調課管理":
         else:
             st.subheader("📋 選擇要調的課程")
             options = {}
-            for _, row in lessons_avail.iterrows():
+            for idx, (_, row) in enumerate(lessons_avail.iterrows(), start=1):
                 d_str = row["date_parsed"].strftime("%Y-%m-%d")
-                label = f"{d_str} {row.get('start', '')}-{row.get('end', '')} {row.get('學生', '')}（{row.get('type', '')}）"
+                label = f"{d_str} {row.get('start', '')}-{row.get('end', '')} {row.get('學生', '')}（{row.get('type', '')}）#{idx}"
                 options[label] = int(row["id"])
 
             selected = st.selectbox("原課程", list(options.keys()))
@@ -691,7 +743,6 @@ elif menu == "📁 檔案管理":
 
             st.markdown("---")
 
-            # ---------- 新增資料夾 ----------
             st.subheader("➕ 新增資料夾")
             with st.form("create_folder_form"):
                 new_folder_name = st.text_input("資料夾名稱", placeholder="例如：數學、段考複習、作業")
@@ -721,7 +772,6 @@ elif menu == "📁 檔案管理":
 
             st.markdown("---")
 
-            # ---------- 上傳檔案 ----------
             st.subheader("⬆️ 上傳檔案")
 
             subfolders = service.files().list(
@@ -787,7 +837,6 @@ elif menu == "📁 檔案管理":
 
             st.markdown("---")
 
-            # ---------- 資料夾與檔案列表 ----------
             st.subheader("📂 資料夾與檔案")
 
             if not subfolders:
