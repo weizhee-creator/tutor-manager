@@ -509,6 +509,7 @@ elif menu == "👤 學生管理":
             st.rerun()
 
 # ---------- 補課管理 ----------
+
 elif menu == "🔄 補課管理":
     st.title("🔄 補課管理")
 
@@ -540,6 +541,8 @@ elif menu == "🔄 補課管理":
             st.info("目前沒有已排定的課程")
 
     st.markdown("---")
+
+    # ---------- 待補課清單 ----------
     st.subheader("待補課清單")
     todo = lessons[lessons["status"] == "待補課"]
     if todo.empty:
@@ -580,6 +583,21 @@ elif menu == "🔄 補課管理":
                 lessons.loc[lessons["id"] == lid, "status"] = "已補課"
                 save_data(lessons, "lessons")
                 st.success("✅ 補課已建立")
+                st.rerun()
+
+        # ---------- 取消待補課標記 ----------
+        st.markdown("---")
+        st.subheader("↩️ 取消待補課標記")
+        st.caption("將課程恢復為「已排定」")
+
+        with st.form("cancel_todo"):
+            selected_cancel = st.selectbox("選擇要取消標記的課程", list(todo_options.keys()), key="cancel_todo_select")
+            cancel_lid = todo_options[selected_cancel]
+
+            if st.form_submit_button("↩️ 取消待補課", type="primary"):
+                lessons.loc[lessons["id"] == cancel_lid, "status"] = "已排定"
+                save_data(lessons, "lessons")
+                st.success("✅ 已取消待補課標記，恢復為「已排定」")
                 st.rerun()
 
 # ---------- 調課管理 ----------
