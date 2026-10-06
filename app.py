@@ -677,7 +677,6 @@ elif menu == "📁 檔案管理":
                     if not new_folder_name.strip():
                         st.error("請輸入資料夾名稱")
                     else:
-                        # 檢查是否已存在
                         existing = service.files().list(
                             q=f"name='{new_folder_name}' and mimeType='application/vnd.google-apps.folder' and '{folder_id}' in parents and trashed=false",
                             fields="files(id, name)"
@@ -700,10 +699,9 @@ elif menu == "📁 檔案管理":
 
             st.markdown("---")
 
-                      # ---------- 上傳檔案 ----------
+            # ---------- 上傳檔案 ----------
             st.subheader("⬆️ 上傳檔案")
 
-            # 取得所有子資料夾
             subfolders = service.files().list(
                 q=f"'{folder_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
                 fields="files(id, name)",
@@ -717,7 +715,6 @@ elif menu == "📁 檔案管理":
                 selected_folder_name = st.selectbox("選擇要上傳到的資料夾", list(folder_options.keys()), key="upload_folder_select")
                 selected_folder_id = folder_options[selected_folder_name]
 
-                # ✅ 支援多檔上傳
                 uploaded_files = st.file_uploader(
                     "選擇檔案（可一次選多個）",
                     accept_multiple_files=True,
@@ -765,6 +762,70 @@ elif menu == "📁 檔案管理":
                                 st.caption(f"　{ff}")
 
                         st.rerun()
+
+            st.markdown("---")
+
+            # ---------- 資料夾與檔案列表 ----------
+            st.subheader("📂 資料夾與檔案")
+
+            if not subfolders:
+                st.info("尚未建立任何資料夾")
+            else:
+                for subfolder in subfolders:
+                    files = list_files(service, subfolder["id"])
+                    file_count = len(files)
+
+                    with st.expander(f"📁 {subfolder['name']}（{file_count} 個檔案）", expanded=False):
+                        col_del1, col_del2 = st.columns([3, 1])
+                        with col_del2:
+                            if st.button("🗑️ 刪除資料夾", key=f"del_folder_{subfolder['id']}"):
+                                st.session_state[f"confirm_del_folder_{subfolder['id']}"] = True
+
+                        if st.session_state.get(f"confirm_del_folder_{subfolder['id']}", False):
+                            st.warning(f"⚠️ 確定要刪除「{subfolder['name']}」嗎？裡面 {file_count} 個檔案也會一起刪除（無法復原）")
+                            col_c1, col_c2 = st.columns(2)
+                            with col_c1:
+                                if st.button("✅ 確定刪除", key=f"real_del_folder_{subfolder['id']}", type="primary"):
+                                    try:
+                                        for f in files:
+                                            try:
+                                                delete_file(service, f["id"])
+                                            except:
+                                                pass
+                                        service.files().delete(fileId=subfolder["id"]).execute()
+                                        st.success(f"✅ 已刪除資料夾「{subfolder['name']}」")
+                                        st.session_state[f"confirm_del_folder_{subfolder['id']}"] = False
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"刪除失敗：{e}")
+                            with col_c2:
+                                if st.button("❌ 取消", key=f"cancel_del_folder_{subfolder['id']}"):
+                                    st.session_state[f"confirm_del_folder_{subfolder['id']}"] = False
+                                    st.rerun()
+
+                        st.markdown("---")
+
+                        if not files:
+                            st.caption("（此資料夾為空）")
+                        else:
+                            for f in files:
+                                c1, c2, c3 = st.columns([4, 1, 1])
+                                with c1:
+                                    size_kb = int(f.get("size", 0)) / 1024 if f.get("size") else 0
+                                    st.markdown(f"📄 **{f['name']}** （{size_kb:.1f} KB）")
+                                with c2:
+                                    st.markdown(f"[🔗 開啟]({f.get('webViewLink', '#')})")
+                                with c3:
+                                    if st.button("🗑️", key=f"del_file_{f['id']}"):
+                                        try:
+                                            delete_file(service, f["id"])
+                                            st.success("已刪除")
+                                            st.rerun()
+                                        except Exception as e:
+                                            st.error(f"刪除失敗：{e}")
+
+        except Exception as e:
+            st.error(f"Drive 連線失敗：{e}")
 
 # ---------- 申請審核 ----------
 elif menu == "📋 申請審核":
