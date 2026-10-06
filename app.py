@@ -156,6 +156,7 @@ students = load_data("students", STUDENT_COLS)
 lessons = load_data("lessons", LESSON_COLS)
 requests_df = load_data("requests", REQ_COLS)
 progress_df = load_data("progress", PROG_COLS)
+accounts = load_data("accounts")
 
 if not students.empty:
     students["id"] = pd.to_numeric(students["id"], errors="coerce").fillna(0).astype(int)
