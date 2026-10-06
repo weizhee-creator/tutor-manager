@@ -476,6 +476,7 @@ elif menu == "📊 上課進度":
 elif menu == "👤 學生管理":
     st.title("👤 學生管理")
 
+    # ---------- 新增學生（含自動建立帳號） ----------
     with st.expander("➕ 新增學生", expanded=False):
         with st.form("add_student"):
             name = st.text_input("姓名")
@@ -490,8 +491,47 @@ elif menu == "👤 學生管理":
                     new_row = pd.DataFrame([[new_id, name, subject, rate, note]], columns=STUDENT_COLS)
                     students = pd.concat([students, new_row], ignore_index=True)
                     save_data(students, "students")
-                    st.success(f"已新增學生 {name}")
-                    st.rerun()
+
+                    # ---------- 自動建立帳號 ----------
+                    username = f"S{new_id:03d}"
+                    default_pw = "tutor2026"
+                    new_salt = os.urandom(16).hex()
+                    new_hash = hash_password(default_pw, new_salt)
+
+                    # 檢查 accounts 分頁
+                    if accounts.empty or "student_id" not in accounts.columns:
+                        # accounts 分頁是空的
+                        accounts_new = pd.DataFrame([[
+                            new_id, username, new_hash, new_salt, "student", name, "TRUE"
+                        ]], columns=["student_id", "username", "password_hash", "salt", "role", "name", "must_change_pw"])
+                        save_data(accounts_new, "accounts")
+                    else:
+                        # 加入新帳號
+                        new_acc = pd.DataFrame([[
+                            new_id, username, new_hash, new_salt, "student", name, "TRUE"
+                        ]], columns=accounts.columns.tolist())
+                        accounts = pd.concat([accounts, new_acc], ignore_index=True)
+                        save_data(accounts, "accounts")
+
+                    st.success(f"✅ 已新增學生「{name}」並自動建立帳號")
+                    st.info(f"""
+**新學生帳號資訊**
+
+- 姓名：{name}
+- 學號：`{username}`
+- 密碼：`{default_pw}`
+- 首次登入：強制更改密碼
+
+**複製以下訊息傳給學生：**
+
+📚 WeiZhe 家教學習平台
+
+網址：https://weizhetutor.streamlit.app
+學號：{username}
+密碼：{default_pw}
+
+⚠️ 第一次登入後請自行更改密碼。
+                    """)
 
     st.subheader("學生列表")
     if students.empty:
