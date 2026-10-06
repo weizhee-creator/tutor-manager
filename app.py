@@ -20,6 +20,49 @@ import io
 import calendar
 import hashlib
 
+# ---------- 設定 ----------
+st.set_page_config(page_title="家教時間管理", page_icon="📚", layout="wide")
+
+# ---------- 登入驗證 ----------
+def check_login():
+    """檢查是否已登入"""
+    if "teacher_logged_in" not in st.session_state:
+        st.session_state.teacher_logged_in = False
+    return st.session_state.teacher_logged_in
+
+def login_page():
+    """顯示登入頁面"""
+    st.title("📚 家教管理系統")
+    st.caption("請先登入")
+    st.markdown("---")
+
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.subheader("🔐 老師登入")
+        with st.form("teacher_login"):
+            username = st.text_input("帳號")
+            password = st.text_input("密碼", type="password")
+            submitted = st.form_submit_button("登入", use_container_width=True)
+
+            if submitted:
+                try:
+                    correct_user = st.secrets["teacher"]["username"]
+                    correct_pw = st.secrets["teacher"]["password"]
+
+                    if username == correct_user and password == correct_pw:
+                        st.session_state.teacher_logged_in = True
+                        st.success("✅ 登入成功")
+                        st.rerun()
+                    else:
+                        st.error("❌ 帳號或密碼錯誤")
+                except Exception as e:
+                    st.error(f"登入系統尚未設定：{e}")
+
+# ---------- 登入檢查 ----------
+if not check_login():
+    login_page()
+    st.stop()
+
 # ---------- 連接 Google Sheets ----------
 @st.cache_resource
 def get_gsheet_client():
@@ -145,9 +188,7 @@ def get_student_folder(service, student):
     student_folder_name = f"S{student['id']:03d}_{student['name']}"
     return find_or_create_folder(service, student_folder_name, root_id)
 
-# ---------- 設定 ----------
-st.set_page_config(page_title="家教時間管理", page_icon="📚", layout="wide")
-
+# ---------- 常數 ----------
 STUDENT_COLS = ["id", "name", "subject", "hourly_rate", "note"]
 LESSON_COLS = ["id", "student_id", "date", "start", "end", "type", "status", "note"]
 REQ_COLS = ["id", "student_id", "type", "original_lesson_id", "requested_date",
@@ -185,6 +226,11 @@ menu = st.sidebar.radio("功能選單", [
     "📆 週期排課",
     "📈 時數統計",
 ])
+
+st.sidebar.markdown("---")
+if st.sidebar.button("🚪 登出", use_container_width=True):
+    st.session_state.teacher_logged_in = False
+    st.rerun()
 
 # ---------- 首頁 ----------
 if menu == "🏠 首頁總覽":
@@ -476,7 +522,6 @@ elif menu == "📊 上課進度":
 elif menu == "👤 學生管理":
     st.title("👤 學生管理")
 
-    # ---------- 新增學生（含自動建立帳號） ----------
     with st.expander("➕ 新增學生", expanded=False):
         with st.form("add_student"):
             name = st.text_input("姓名")
@@ -492,21 +537,17 @@ elif menu == "👤 學生管理":
                     students = pd.concat([students, new_row], ignore_index=True)
                     save_data(students, "students")
 
-                    # ---------- 自動建立帳號 ----------
                     username = f"S{new_id:03d}"
                     default_pw = "tutor2026"
                     new_salt = os.urandom(16).hex()
                     new_hash = hash_password(default_pw, new_salt)
 
-                    # 檢查 accounts 分頁
                     if accounts.empty or "student_id" not in accounts.columns:
-                        # accounts 分頁是空的
                         accounts_new = pd.DataFrame([[
                             new_id, username, new_hash, new_salt, "student", name, "TRUE"
                         ]], columns=["student_id", "username", "password_hash", "salt", "role", "name", "must_change_pw"])
                         save_data(accounts_new, "accounts")
                     else:
-                        # 加入新帳號
                         new_acc = pd.DataFrame([[
                             new_id, username, new_hash, new_salt, "student", name, "TRUE"
                         ]], columns=accounts.columns.tolist())
@@ -553,7 +594,6 @@ elif menu == "👤 學生管理":
             st.success("已刪除")
             st.rerun()
 
-        # ---------- 重設學生密碼 ----------
         st.markdown("---")
         st.subheader("🔑 重設學生密碼")
         st.caption("將學生的密碼重設為預設密碼 tutor2026，並要求下次登入時更改")
